@@ -7,7 +7,7 @@ export type Options = {
   repo: string;
   branch: string;
   message: string;
-  // empty commit
+  empty?: boolean; // if true, create an empty commit
   files?: string[];
   parent?: string;
   noParent?: boolean; // if true, do not use parent commit
@@ -29,7 +29,10 @@ export type GitHub = Octokit | ReturnType<typeof github.getOctokit>;
 export const commit = async (
   octokit: GitHub,
   opts: Options,
-): Promise<Result> => {
+): Promise<Result|undefined> => {
+  if (!opts.files?.length && !opts.empty) {
+    return undefined;
+  }
   for (const key of ["owner", "repo", "branch", "message"] as const) {
     if (!opts[key]) {
       throw new Error(`${key} is required`);
@@ -37,20 +40,18 @@ export const commit = async (
   }
   const baseBranch = await getBaseBranch(octokit, opts);
 
-  const tree: File[] = [];
-  for (const filePath of opts.files || []) {
-    const file = await getFileContentAndMode(filePath);
-    tree.push({
-      path: filePath,
-      mode: file.mode,
-      type: "blob",
-      content: file.content,
-    });
-  }
-
-  // Check if files exist
   let treeSHA = baseBranch.target.tree.oid;
-  if (tree.length > 0) {
+  if (!opts.empty) {
+    const tree: File[] = [];
+    for (const filePath of opts.files || []) {
+      const file = await getFileContentAndMode(filePath);
+      tree.push({
+        path: filePath,
+        mode: file.mode,
+        type: "blob",
+        content: file.content,
+      });
+    }
     const treeResp = await octokit.rest.git.createTree({
       owner: opts.owner,
       repo: opts.repo,
@@ -59,6 +60,7 @@ export const commit = async (
     });
     treeSHA = treeResp.data.sha;
   }
+
   // Create a commit
   const commit = await octokit.rest.git.createCommit({
     owner: opts.owner,

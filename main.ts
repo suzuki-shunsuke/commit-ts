@@ -43,7 +43,9 @@ export const commit = async (
     repo: opts.repo,
     message: opts.message,
     tree: treeSHA,
-    parents: opts.noParent ? undefined : (opts.parent ? [opts.parent] : [baseBranch.target.oid]),
+    parents: opts.noParent
+      ? undefined
+      : (opts.parent ? [opts.parent] : [baseBranch.target.oid]),
   });
   if (baseBranch.name === opts.branch) {
     // Update the reference if the branch exists

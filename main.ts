@@ -43,7 +43,7 @@ export const commit = async (
     repo: opts.repo,
     message: opts.message,
     tree: treeSHA,
-    parents: opts.parent && [opts.parent] || [baseBranch.target.oid],
+    parents: opts.noParent ? undefined : (opts.parent ? [opts.parent] : [baseBranch.target.oid]),
   });
   if (baseBranch.name === opts.branch) {
     // Update the reference if the branch exists
@@ -126,7 +126,9 @@ const getTreeSHA = async (
     owner: opts.owner,
     repo: opts.repo,
     tree: tree,
-    base_tree: baseBranch.target.tree.oid,
+    // If not provided, GitHub will create a new Git tree object from only the entries defined in the tree parameter.
+    // If you create a new commit pointing to such a tree, then all files which were a part of the parent commit's tree and were not defined in the tree parameter will be listed as deleted by the new commit.
+    base_tree: opts.noParent ? undefined : baseBranch.target.tree.oid,
   });
   return treeResp.data.sha;
 };

@@ -1,5 +1,5 @@
-import * as github from "@actions/github";
-import { Octokit } from "@octokit/rest";
+import type * as github from "@actions/github";
+import type { Octokit } from "@octokit/rest";
 import { readFile, stat } from "node:fs/promises";
 
 export type Options = {

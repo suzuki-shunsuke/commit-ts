@@ -49,18 +49,22 @@ export const commit = async (
   }
 
   // Check if files exist
-  const treeResp = await octokit.rest.git.createTree({
-    owner: opts.owner,
-    repo: opts.repo,
-    tree: tree,
-    base_tree: baseBranch.target.tree.oid,
-  });
+  let treeSHA = baseBranch.target.tree.oid;
+  if (tree.length > 0) {
+    const treeResp = await octokit.rest.git.createTree({
+      owner: opts.owner,
+      repo: opts.repo,
+      tree: tree,
+      base_tree: baseBranch.target.tree.oid,
+    });
+    treeSHA = treeResp.data.sha;
+  }
   // Create a commit
   const commit = await octokit.rest.git.createCommit({
     owner: opts.owner,
     repo: opts.repo,
     message: opts.message,
-    tree: treeResp.data.sha,
+    tree: treeSHA,
     parents: opts.parent && [opts.parent] || [baseBranch.target.oid],
   });
   if (baseBranch.name === opts.branch) {

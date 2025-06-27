@@ -1,0 +1,10 @@
+{
+  "tasks": {
+    "dev": "deno run --watch main.ts"
+  },
+  "imports": {
+    "@actions/github": "npm:@actions/github@^6.0.1",
+    "@octokit/rest": "npm:@octokit/rest@^22.0.0",
+    "@std/assert": "jsr:@std/assert@1"
+  }
+}

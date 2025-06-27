@@ -1,0 +1,64 @@
+{
+  "checksums": [
+    {
+      "id": "github_release/github.com/denoland/deno/v2.3.7/deno-aarch64-apple-darwin.zip",
+      "checksum": "764389A4D499C56E7B950D4D7D9BB52A9A55B87717D25F6CE65FAEE895DFA2F0",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/denoland/deno/v2.3.7/deno-aarch64-unknown-linux-gnu.zip",
+      "checksum": "FBF420AEE4469094BD91E595DD78814C94737DFB1D26E640B13AA938A9663CF8",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/denoland/deno/v2.3.7/deno-x86_64-apple-darwin.zip",
+      "checksum": "49655E8059FFD59976BF23F9ED0D843C9C6E33CEB3D0E780BD3D87EE5E051734",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/denoland/deno/v2.3.7/deno-x86_64-pc-windows-msvc.zip",
+      "checksum": "5C3B396D190EFA2C348A1935CBFEC8E7EAC2D428EFEF3B413174EBEBBB6817D4",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/denoland/deno/v2.3.7/deno-x86_64-unknown-linux-gnu.zip",
+      "checksum": "63F55A621441FBBC8830324BAF3D9C7A94928C7FB6B8AD54265DC9442DCD1DD2",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/suzuki-shunsuke/ghalint/v1.5.1/ghalint_1.5.1_darwin_amd64.tar.gz",
+      "checksum": "112E4B35C5ABC3E92EC08A7F3FF583909F65BB5C9E649453B1FED139B43C4636",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/suzuki-shunsuke/ghalint/v1.5.1/ghalint_1.5.1_darwin_arm64.tar.gz",
+      "checksum": "F65636894E3E98B2413EA8BDCFF80FD7DDD661741000F6566EDBE157DE079BE4",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/suzuki-shunsuke/ghalint/v1.5.1/ghalint_1.5.1_linux_amd64.tar.gz",
+      "checksum": "E791009D9361C8F0F0D2E2B9B67D428FE2DDDC6694CBFEC9954E2502A8E0E0FF",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/suzuki-shunsuke/ghalint/v1.5.1/ghalint_1.5.1_linux_arm64.tar.gz",
+      "checksum": "67300713993EE6FC62AD72B6495D0A0B0002A6B3603E1BC49E4BF9F11C4B3E0E",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/suzuki-shunsuke/ghalint/v1.5.1/ghalint_1.5.1_windows_amd64.zip",
+      "checksum": "C020B03CC5785FDC0E170139EE171961E3A5F6A66A4D4B813DBD1C0DA48D74C5",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/suzuki-shunsuke/ghalint/v1.5.1/ghalint_1.5.1_windows_arm64.zip",
+      "checksum": "86B971284006BBE357ACA6083E6B698CC0089410AED42A6FB5F7008D10A71530",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "registries/github_content/github.com/aquaproj/aqua-registry/v4.381.0/registry.yaml",
+      "checksum": "1148706A7043A4B31063B6CA251EDBD32CABD760E86D3DA9325A3096AB6E0D4F40E0E91CB5D617581CE95A515C20CA7E2C444BC65A3AC84A8A9E067726552EFC",
+      "algorithm": "sha512"
+    }
+  ]
+}

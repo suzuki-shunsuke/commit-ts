@@ -11,7 +11,7 @@ export type Options = {
   files?: string[];
   parent?: string;
   noParent?: boolean; // if true, do not use parent commit
-  directory?: string;
+  // baseDirectory?: string;
   deletedFiles?: string[]; // files to delete
   deleteIfNotExist?: boolean; // if true, delete files if they don't exist
   forcePush?: boolean; // if true, force push the commit
@@ -26,7 +26,7 @@ export type Result = {
 
 export type GitHub = Octokit | ReturnType<typeof github.getOctokit>;
 
-export const commit = async (
+export const createCommit = async (
   octokit: GitHub,
   opts: Options,
 ): Promise<Result | undefined> => {

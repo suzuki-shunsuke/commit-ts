@@ -3,7 +3,7 @@ import { Octokit } from "@octokit/rest";
 import { readFile, stat } from "node:fs/promises";
 
 export type Options = {
-owner: string;
+  owner: string;
   repo: string;
   branch: string;
   message: string;
@@ -26,15 +26,18 @@ export type Result = {
 
 export type GitHub = Octokit | ReturnType<typeof github.getOctokit>;
 
-export const commit = async (octokit: GitHub, opts: Options): Promise<Result> => {
+export const commit = async (
+  octokit: GitHub,
+  opts: Options,
+): Promise<Result> => {
   for (const key of ["owner", "repo", "branch", "message"] as const) {
     if (!opts[key]) {
       throw new Error(`${key} is required`);
     }
   }
   const baseBranch = await getBaseBranch(octokit, opts);
- 
-  const tree: File[] =[];
+
+  const tree: File[] = [];
   for (const filePath of opts.files || []) {
     const file = await getFileContentAndMode(filePath);
     tree.push({
@@ -121,7 +124,10 @@ const getBaseBranch = async (octokit: GitHub, opts: Options): Promise<Ref> => {
   return await getDefaultBranch(octokit, opts);
 };
 
-const getDefaultBranch = async (octokit: GitHub, opts: Options): Promise<Ref> => {
+const getDefaultBranch = async (
+  octokit: GitHub,
+  opts: Options,
+): Promise<Ref> => {
   const { repository } = await octokit.graphql<DefaultBranchResponse>(
     `query($owner: String!, $repo: String!) {
      repository(owner: $owner, name: $repo) {
@@ -160,7 +166,7 @@ type Ref = {
     tree: {
       oid: string;
     };
-  }
+  };
 };
 
 type getBranchResponse = {
@@ -169,7 +175,10 @@ type getBranchResponse = {
   };
 };
 
-const getBranch = async (octokit: GitHub, input: getBranchInput): Promise<Ref | undefined> => {
+const getBranch = async (
+  octokit: GitHub,
+  input: getBranchInput,
+): Promise<Ref | undefined> => {
   // Get the branch
   const resp = await octokit.graphql<getBranchResponse>(
     `query($owner: String!, $repo: String!, $ref: String!) {
@@ -198,8 +207,8 @@ const getBranch = async (octokit: GitHub, input: getBranchInput): Promise<Ref | 
 
 const getFileContentAndMode = async (filePath: string): Promise<File> => {
   const [content, stats] = await Promise.all([
-    readFile(filePath, 'utf8'),
-    stat(filePath)           
+    readFile(filePath, "utf8"),
+    stat(filePath),
   ]);
 
   return {
@@ -207,8 +216,8 @@ const getFileContentAndMode = async (filePath: string): Promise<File> => {
     content,
     mode: getFileMode(stats.mode),
     type: "blob",
-  };                    
-};                         
+  };
+};
 
 const getFileMode = (mode: number): FileMode => {
   switch (mode & 0o170000) {

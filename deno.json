@@ -1,6 +1,16 @@
 {
+  "name": "@suzuki-shunsuke/commit-ts",
+  "version": "0.0.1",
+  "exports": "./main.ts",
   "tasks": {
     "dev": "deno run --watch main.ts"
+  },
+  "publish": {
+    "include": [
+      "LICENSE",
+      "README.md",
+      "main.ts"
+    ]
   },
   "imports": {
     "@actions/github": "npm:@actions/github@^6.0.1",

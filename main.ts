@@ -44,16 +44,23 @@ export const commit = async (
   if (!opts.empty) {
     const tree: File[] = [];
     for (const filePath of opts.files || []) {
-      const file = await getFileContentAndMode(filePath);
+      const file = await getFileContentAndMode(
+        filePath,
+        opts.deleteIfNotExist || false,
+      );
       tree.push({
         path: filePath,
+        sha: file.sha,
         mode: file.mode,
         type: "blob",
         content: file.content,
       });
     }
     for (const filePath of opts.deletedFiles || []) {
-      const file = await getFileContentAndMode(filePath);
+      const file = await getFileContentAndMode(
+        filePath,
+        opts.deleteIfNotExist || false,
+      );
       tree.push({
         path: filePath,
         mode: file.mode,
@@ -113,7 +120,7 @@ type File = {
   path: string;
   content?: string;
   sha?: string | null;
-  mode?: FileMode;
+  mode: FileMode;
   type?: "blob" | "tree" | "commit";
 };
 
@@ -222,18 +229,51 @@ const getBranch = async (
   return resp.repository.ref;
 };
 
-const getFileContentAndMode = async (filePath: string): Promise<File> => {
-  const [content, stats] = await Promise.all([
-    readFile(filePath, "utf8"),
-    stat(filePath),
-  ]);
+type Err = {
+  code: string;
+};
 
-  return {
-    path: filePath,
-    content,
-    mode: getFileMode(stats.mode),
-    type: "blob",
-  };
+const getFileContentAndMode = async (
+  filePath: string,
+  deleteIfNotExist: boolean,
+): Promise<File> => {
+  if (!deleteIfNotExist) {
+    const [content, stats] = await Promise.all([
+      readFile(filePath, "utf8"),
+      stat(filePath),
+    ]);
+    return {
+      path: filePath,
+      content,
+      mode: getFileMode(stats.mode),
+      type: "blob",
+    };
+  }
+  try {
+    const stats = await stat(filePath);
+    const content = await readFile(filePath, "utf8");
+    return {
+      path: filePath,
+      content,
+      mode: getFileMode(stats.mode),
+      type: "blob",
+    };
+  } catch (error: unknown) {
+    if (typeof error !== "object" || error === undefined) {
+      throw error;
+    }
+    const err = error as Record<keyof Err, unknown>;
+    if (typeof err.code !== "string" || err.code !== "ENOENT") {
+      throw error;
+    }
+    // If the file does not exist, remove the file
+    return {
+      sha: null,
+      path: filePath,
+      mode: "100644",
+      type: "blob",
+    };
+  }
 };
 
 const getFileMode = (mode: number): FileMode => {

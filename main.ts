@@ -29,7 +29,7 @@ export type GitHub = Octokit | ReturnType<typeof github.getOctokit>;
 export const commit = async (
   octokit: GitHub,
   opts: Options,
-): Promise<Result|undefined> => {
+): Promise<Result | undefined> => {
   if (!opts.files?.length && !opts.empty) {
     return undefined;
   }

@@ -7,4 +7,3 @@
     "github>aquaproj/aqua-renovate-config:file#2.8.2(aqua/imports/.*\\.yaml)",
   ],
 }
-

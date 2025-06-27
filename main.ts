@@ -3,7 +3,7 @@ import { Octokit } from "@octokit/rest";
 import { readFile, stat } from "node:fs/promises";
 
 export type Options = {
-  owner: string;
+owner: string;
   repo: string;
   branch: string;
   message: string;

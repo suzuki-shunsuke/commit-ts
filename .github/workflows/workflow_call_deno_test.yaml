@@ -15,3 +15,4 @@ jobs:
       - run: deno check
         env:
           AQUA_GITHUB_TOKEN: ${{github.token}}
+      - run: deno lint

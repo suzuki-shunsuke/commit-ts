@@ -30,7 +30,7 @@ export const commit = async (
   octokit: GitHub,
   opts: Options,
 ): Promise<Result | undefined> => {
-  if (!opts.files?.length && !opts.empty) {
+  if (!opts.files?.length && !opts.deletedFiles?.length && !opts.empty) {
     return undefined;
   }
   for (const key of ["owner", "repo", "branch", "message"] as const) {
@@ -50,6 +50,15 @@ export const commit = async (
         mode: file.mode,
         type: "blob",
         content: file.content,
+      });
+    }
+    for (const filePath of opts.deletedFiles || []) {
+      const file = await getFileContentAndMode(filePath);
+      tree.push({
+        path: filePath,
+        mode: file.mode,
+        type: "blob",
+        sha: null,
       });
     }
     const treeResp = await octokit.rest.git.createTree({
@@ -101,7 +110,8 @@ type FileMode = "100644" | "100755" | "040000" | "160000" | "120000";
 
 type File = {
   path: string;
-  content: string;
+  content?: string;
+  sha?: string | null;
   mode?: FileMode;
   type?: "blob" | "tree" | "commit";
 };

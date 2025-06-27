@@ -7,7 +7,7 @@ export type Options = {
   repo: string;
   branch: string;
   message: string;
-  // empty commit
+  empty?: boolean; // if true, create an empty commit
   files?: string[];
   parent?: string;
   noParent?: boolean; // if true, do not use parent commit
@@ -29,7 +29,10 @@ export type GitHub = Octokit | ReturnType<typeof github.getOctokit>;
 export const commit = async (
   octokit: GitHub,
   opts: Options,
-): Promise<Result> => {
+): Promise<Result | undefined> => {
+  if (!opts.files?.length && !opts.empty) {
+    return undefined;
+  }
   for (const key of ["owner", "repo", "branch", "message"] as const) {
     if (!opts[key]) {
       throw new Error(`${key} is required`);
@@ -37,30 +40,33 @@ export const commit = async (
   }
   const baseBranch = await getBaseBranch(octokit, opts);
 
-  const tree: File[] = [];
-  for (const filePath of opts.files || []) {
-    const file = await getFileContentAndMode(filePath);
-    tree.push({
-      path: filePath,
-      mode: file.mode,
-      type: "blob",
-      content: file.content,
+  let treeSHA = baseBranch.target.tree.oid;
+  if (!opts.empty) {
+    const tree: File[] = [];
+    for (const filePath of opts.files || []) {
+      const file = await getFileContentAndMode(filePath);
+      tree.push({
+        path: filePath,
+        mode: file.mode,
+        type: "blob",
+        content: file.content,
+      });
+    }
+    const treeResp = await octokit.rest.git.createTree({
+      owner: opts.owner,
+      repo: opts.repo,
+      tree: tree,
+      base_tree: baseBranch.target.tree.oid,
     });
+    treeSHA = treeResp.data.sha;
   }
 
-  // Check if files exist
-  const treeResp = await octokit.rest.git.createTree({
-    owner: opts.owner,
-    repo: opts.repo,
-    tree: tree,
-    base_tree: baseBranch.target.tree.oid,
-  });
   // Create a commit
   const commit = await octokit.rest.git.createCommit({
     owner: opts.owner,
     repo: opts.repo,
     message: opts.message,
-    tree: treeResp.data.sha,
+    tree: treeSHA,
     parents: opts.parent && [opts.parent] || [baseBranch.target.oid],
   });
   if (baseBranch.name === opts.branch) {

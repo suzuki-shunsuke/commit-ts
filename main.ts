@@ -85,6 +85,7 @@ export const commit = async (
       repo: opts.repo,
       ref: `heads/${opts.branch}`,
       sha: commit.data.sha,
+      force: opts.forcePush || false, // Use force push if specified
     });
     return {
       commit: {

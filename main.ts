@@ -47,21 +47,34 @@ export const createCommit = async (
     tree: treeSHA,
     parents: parents,
   });
-  const branch = await getBranch(octokit, {
-    owner: opts.owner,
-    repo: opts.repo,
-    branch: opts.branch,
-  });
   try {
     // Update the reference if the branch exists
     return await updateRef(octokit, opts, commit.data.sha);
-  } catch (error: any) {
+  } catch (error: unknown) {
+    if (!isError(error)) {
+      throw error;
+    }
     if (!error.message.includes("Reference does not exist")) {
       throw error;
     }
     // Create a reference if the branch does not exist
     return await createRef(octokit, opts, commit.data.sha);
   }
+};
+
+const isError = (value: unknown): value is Error => {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const error = value as Record<keyof Error, unknown>;
+  if (typeof error.message !== "string") {
+    return false;
+  }
+  return true;
+};
+
+type Error = {
+  message: string;
 };
 
 type FileMode = "100644" | "100755" | "040000" | "160000" | "120000";

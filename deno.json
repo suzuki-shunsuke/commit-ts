@@ -1,6 +1,6 @@
 {
   "name": "@suzuki-shunsuke/commit-ts",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "exports": "./main.ts",
   "tasks": {
     "dev": "deno run --watch main.ts"

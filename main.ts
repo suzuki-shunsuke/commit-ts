@@ -12,7 +12,7 @@ export type Options = {
   repo: string;
   branch: string;
   message: string;
-  rootDir: string;
+  rootDir?: string;
   empty?: boolean; // if true, create an empty commit
   files?: string[];
   baseSHA?: string; // By default, the base branch's latest commit is used
@@ -175,7 +175,7 @@ const createTreeFile = async (
   filePath: string,
 ): Promise<File> => {
   const file = await getFileContentAndMode(
-    path.join(opts.rootDir, filePath),
+    path.join(opts.rootDir || "", filePath),
     opts.deleteIfNotExist || false,
   );
   return {
@@ -192,7 +192,7 @@ const createDeletedTreeFile = async (
   filePath: string,
 ): Promise<File> => {
   const file = await getFileContentAndMode(
-    path.join(opts.rootDir, filePath),
+    path.join(opts.rootDir || "", filePath),
     opts.deleteIfNotExist || false,
   );
   return {

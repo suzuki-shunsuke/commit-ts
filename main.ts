@@ -61,7 +61,7 @@ export const createCommit = async (
     // Update the reference if the branch exists
     return await updateRef(octokit, opts, commit.data.sha, logger);
   } catch (error: unknown) {
-    if (!Error.isError(error)) {
+    if (!isError(error)) {
       throw error;
     }
     if (!error.message.includes("Reference does not exist")) {
@@ -70,6 +70,22 @@ export const createCommit = async (
     // Create a reference if the branch does not exist
     return await createRef(octokit, opts, commit.data.sha, logger);
   }
+};
+
+// Node.js hasn't supported Error.isError yet.
+const isError = (value: unknown): value is Error => {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const error = value as Record<keyof Error, unknown>;
+  if (typeof error.message !== "string") {
+    return false;
+  }
+  return true;
+};
+
+type Error = {
+  message: string;
 };
 
 type FileMode = "100644" | "100755" | "040000" | "160000" | "120000";

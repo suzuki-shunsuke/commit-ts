@@ -382,9 +382,12 @@ const getFileContentAndMode = async (
 };
 
 const getFileMode = (mode: number): FileMode => {
-  switch (mode & 0o170000) {
-    case 0o100755: // executable file
-      return "100755";
+  const type = mode & 0o170000;
+  const perm = mode & 0o777;
+
+  switch (type) {
+    case 0o100000: // regular file
+      return (perm & 0o111) ? "100755" : "100644";
     case 0o040000: // directory
       return "040000";
     case 0o160000: // symlink

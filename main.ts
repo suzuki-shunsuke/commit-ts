@@ -49,7 +49,7 @@ export const createCommit = async (
   const treeSHA = await getTreeSHA(octokit, opts, baseBranch, logger);
   // Create a commit
   const parents = opts.noParent ? undefined : [baseBranch.target.oid];
-  logger.info(`creating a commit tree=${treeSHA} parents=${parents}`);
+  logger.info(`creating a commit: owner=${opts.owner} repo=${opts.repo} tree=${treeSHA} parents=${parents}`);
   const commit = await octokit.rest.git.createCommit({
     owner: opts.owner,
     repo: opts.repo,
@@ -111,7 +111,7 @@ const updateRef = async (
   logger: Logger,
 ): Promise<Result> => {
   // Update the reference if the branch exists
-  logger.info(`updating ref=heads/${opts.branch} sha=${sha}`);
+  logger.info(`updating a ref: owner=${opts.owner} repo=${opts.repo} ref=heads/${opts.branch} sha=${sha} force=${opts.forcePush || false}`);
   const updatedRef = await octokit.rest.git.updateRef({
     owner: opts.owner,
     repo: opts.repo,
@@ -132,7 +132,7 @@ const createRef = async (
   sha: string,
   logger: Logger,
 ): Promise<Result> => {
-  logger.info(`creating ref=heads/${opts.branch} sha=${sha}`);
+  logger.info(`creating a ref: owner=${opts.owner} repo=${opts.repo} ref=refs/heads/${opts.branch} sha=${sha}`);
   const createdRef = await octokit.rest.git.createRef({
     owner: opts.owner,
     repo: opts.repo,
@@ -164,7 +164,7 @@ const getTreeSHA = async (
   }
   const baseTree = opts.noParent ? undefined : baseBranch.target.tree.oid;
   logger.info(
-    `creating a tree with ${tree.length} files base_tree=${baseTree}`,
+    `creating a tree with ${tree.length} files: owner=${opts.owner} repo=${opts.repo} base_tree=${baseTree}`,
   );
   const treeResp = await octokit.rest.git.createTree({
     owner: opts.owner,

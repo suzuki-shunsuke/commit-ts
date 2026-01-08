@@ -45,7 +45,7 @@ export const createCommit = async (
   const logger = opts.logger || {
     info: (message: string) => console.info(message),
   };
-  const baseBranch = await getBaseBranch(octokit, opts);
+  const baseBranch = await getBaseBranch(octokit, logger, opts);
   const treeSHA = await getTreeSHA(octokit, opts, baseBranch, logger);
   // Create a commit
   const parents = opts.noParent ? undefined : [baseBranch.target.oid];
@@ -227,7 +227,11 @@ const createDeletedTreeFile = async (
   };
 };
 
-const getBaseBranch = async (octokit: GitHub, opts: Options): Promise<Ref> => {
+const getBaseBranch = async (
+  octokit: GitHub,
+  logger: Logger,
+  opts: Options,
+): Promise<Ref> => {
   if (opts.baseSHA) {
     return {
       target: {
@@ -239,6 +243,9 @@ const getBaseBranch = async (octokit: GitHub, opts: Options): Promise<Ref> => {
     };
   }
   if (opts.baseBranch) {
+    logger.info(
+      `getting the base branch: owner=${opts.owner} repo=${opts.repo} branch=${opts.baseBranch}`,
+    );
     const branch = await getBranch(octokit, {
       owner: opts.owner,
       repo: opts.repo,
@@ -252,6 +259,9 @@ const getBaseBranch = async (octokit: GitHub, opts: Options): Promise<Ref> => {
     return branch;
   }
   // Check if the specified branch exists
+  logger.info(
+    `getting the branch: owner=${opts.owner} repo=${opts.repo} branch=${opts.branch}`,
+  );
   const branch = await getBranch(octokit, {
     owner: opts.owner,
     repo: opts.repo,
@@ -261,6 +271,9 @@ const getBaseBranch = async (octokit: GitHub, opts: Options): Promise<Ref> => {
   if (branch) {
     return branch;
   }
+  logger.info(
+    `getting the default branch: owner=${opts.owner} repo=${opts.repo}`,
+  );
   return await getDefaultBranch(octokit, opts);
 };
 

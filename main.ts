@@ -90,6 +90,8 @@ type Error = {
   message: string;
 };
 
+type FileType = "blob" | "tree" | "commit";
+
 type FileMode = "100644" | "100755" | "040000" | "160000" | "120000";
 
 type File = {
@@ -97,7 +99,7 @@ type File = {
   content?: string;
   sha?: string | null;
   mode: FileMode;
-  type?: "blob" | "tree" | "commit";
+  type?: FileType;
 };
 
 type DefaultBranchResponse = {
@@ -194,6 +196,28 @@ const validateOptions = (opts: Options) => {
   }
 };
 
+const getFileType = (mode: FileMode): FileType => {
+  // https://octokit.github.io/rest.js/v22/#git-create-tree
+  // The file mode;
+  // one of 100644 for file (blob),
+  // 100755 for executable (blob),
+  // 040000 for subdirectory (tree),
+  // 160000 for submodule (commit),
+  // or 120000 for a blob that specifies the path of a symlink.
+  switch (mode) {
+    case "100644":
+      return "blob";
+    case "100755":
+      return "blob";
+    case "040000":
+      return "tree";
+    case "160000":
+      return "commit";
+    case "120000":
+      return "blob";
+  }
+};
+
 const createTreeFile = async (
   opts: Options,
   filePath: string,
@@ -206,7 +230,7 @@ const createTreeFile = async (
     path: filePath,
     sha: file.sha,
     mode: file.mode,
-    type: "blob",
+    type: getFileType(file.mode),
     content: file.content,
   };
 };
@@ -291,11 +315,11 @@ const getDefaultBranch = async (
              tree {
                oid
              }
-           } 
+           }
          }
        }
      }
-   } 
+   }
   `,
     {
       owner: opts.owner,
@@ -341,7 +365,7 @@ const getBranch = async (
           tree {
             oid
           }
-        } 
+        }
       }
     }
   }
@@ -368,21 +392,23 @@ const getFileContentAndMode = async (
       readFile(filePath, "utf8"),
       stat(filePath),
     ]);
+    const mode = getFileMode(stats.mode);
     return {
       path: filePath,
       content,
-      mode: getFileMode(stats.mode),
-      type: "blob",
+      mode: mode,
+      type: getFileType(mode),
     };
   }
   try {
     const stats = await stat(filePath);
     const content = await readFile(filePath, "utf8");
+    const mode = getFileMode(stats.mode);
     return {
       path: filePath,
       content,
-      mode: getFileMode(stats.mode),
-      type: "blob",
+      mode: mode,
+      type: getFileType(mode),
     };
   } catch (error: unknown) {
     if (typeof error !== "object" || error === undefined) {
@@ -393,11 +419,12 @@ const getFileContentAndMode = async (
       throw error;
     }
     // If the file does not exist, remove the file
+    const mode = "100644";
     return {
       sha: null,
       path: filePath,
-      mode: "100644",
-      type: "blob",
+      mode: mode,
+      type: getFileType(mode),
     };
   }
 };
@@ -408,7 +435,7 @@ const getFileMode = (mode: number): FileMode => {
 
   switch (type) {
     case 0o100000: // regular file
-      return (perm & 0o111) ? "100755" : "100644";
+      return perm & 0o111 ? "100755" : "100644";
     case 0o040000: // directory
       return "040000";
     case 0o160000: // symlink

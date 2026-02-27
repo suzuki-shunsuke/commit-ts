@@ -246,7 +246,7 @@ const createDeletedTreeFile = async (
   return {
     path: filePath,
     mode: file.mode,
-    type: "blob",
+    type: getFileType(file.mode),
     sha: null,
   };
 };
@@ -383,25 +383,116 @@ type Err = {
   code: string;
 };
 
+const resolvePackedRef = async (
+  gitDir: string,
+  ref: string,
+): Promise<string> => {
+  const packedRefsPath = path.join(gitDir, "packed-refs");
+  const content = await readFile(packedRefsPath, "utf8");
+  for (const line of content.split("\n")) {
+    if (line.startsWith("#") || line.trim() === "") {
+      continue;
+    }
+    const [sha, packedRef] = line.split(" ", 2);
+    if (packedRef === ref) {
+      return sha;
+    }
+  }
+  throw new Error(`ref ${ref} not found in packed-refs`);
+};
+
+const resolveGitHEAD = async (gitDir: string): Promise<string> => {
+  const headPath = path.join(gitDir, "HEAD");
+  const content = (await readFile(headPath, "utf8")).trim();
+  // Detached HEAD: content is a SHA
+  if (!content.startsWith("ref: ")) {
+    return content;
+  }
+  // Symbolic ref: resolve the ref file
+  const ref = content.slice("ref: ".length);
+  const refPath = path.join(gitDir, ref);
+  try {
+    return (await readFile(refPath, "utf8")).trim();
+  } catch {
+    // ref file doesn't exist, try packed-refs
+    return resolvePackedRef(gitDir, ref);
+  }
+};
+
+const getSubmoduleCommitSHA = async (
+  dirPath: string,
+): Promise<string | undefined> => {
+  const dotGitPath = path.join(dirPath, ".git");
+  try {
+    const stats = await stat(dotGitPath);
+    if (!stats.isFile()) {
+      // .git is a directory (regular repo, not a submodule)
+      return undefined;
+    }
+  } catch {
+    // .git doesn't exist
+    return undefined;
+  }
+  // .git is a file → this is a submodule
+  const content = (await readFile(dotGitPath, "utf8")).trim();
+  const match = content.match(/^gitdir:\s*(.+)$/);
+  if (!match) {
+    return undefined;
+  }
+  const gitDir = path.isAbsolute(match[1])
+    ? match[1]
+    : path.resolve(dirPath, match[1]);
+  return resolveGitHEAD(gitDir);
+};
+
 const getFileContentAndMode = async (
   filePath: string,
   deleteIfNotExist: boolean,
 ): Promise<File> => {
   if (!deleteIfNotExist) {
-    const [content, stats] = await Promise.all([
-      readFile(filePath, "utf8"),
-      stat(filePath),
-    ]);
+    const stats = await stat(filePath);
+    if (stats.isDirectory()) {
+      const commitSHA = await getSubmoduleCommitSHA(filePath);
+      if (commitSHA !== undefined) {
+        return {
+          path: filePath,
+          mode: "160000",
+          type: "commit",
+          sha: commitSHA,
+        };
+      }
+      return {
+        path: filePath,
+        mode: "040000",
+        type: "tree",
+      };
+    }
     const mode = getFileMode(stats.mode);
     return {
       path: filePath,
-      content,
+      content: await readFile(filePath, "utf8"),
       mode: mode,
       type: getFileType(mode),
     };
   }
   try {
     const stats = await stat(filePath);
+    if (stats.isDirectory()) {
+      const commitSHA = await getSubmoduleCommitSHA(filePath);
+      if (commitSHA !== undefined) {
+        return {
+          path: filePath,
+          mode: "160000",
+          type: "commit",
+          sha: commitSHA,
+        };
+      }
+      return {
+        path: filePath,
+        mode: "040000",
+        type: "tree",
+      };
+    }
     const content = await readFile(filePath, "utf8");
     const mode = getFileMode(stats.mode);
     return {
@@ -438,9 +529,9 @@ const getFileMode = (mode: number): FileMode => {
       return perm & 0o111 ? "100755" : "100644";
     case 0o040000: // directory
       return "040000";
-    case 0o160000: // symlink
+    case 0o160000: // gitlink (submodule)
       return "160000";
-    case 0o120000: // gitlink
+    case 0o120000: // symlink
       return "120000";
     default:
       return "100644";

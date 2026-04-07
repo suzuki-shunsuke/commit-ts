@@ -20,6 +20,7 @@ export type Options = {
   noParent?: boolean; // if true, do not use parent commit
   deletedFiles?: string[]; // files to delete
   deleteIfNotExist?: boolean; // if true, delete files if they don't exist
+  submodules?: Array<{ path: string; sha: string }>; // submodule entries to add to the tree
   forcePush?: boolean; // if true, force push the commit
   logger?: Logger;
 };
@@ -171,6 +172,14 @@ const getTreeSHA = async (
   }
   for (const filePath of opts.deletedFiles || []) {
     tree.push(await createDeletedTreeFile(opts, filePath));
+  }
+  for (const sub of opts.submodules || []) {
+    tree.push({
+      path: sub.path,
+      mode: "160000",
+      type: "commit",
+      sha: sub.sha,
+    });
   }
   const baseTree = opts.noParent ? undefined : baseBranch.target.tree.oid;
   logger.info(

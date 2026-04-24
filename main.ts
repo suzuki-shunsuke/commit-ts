@@ -99,10 +99,17 @@ type FileMode = "100644" | "100755" | "040000" | "160000" | "120000";
 type File = {
   path: string;
   content?: string;
-  sha?: string | null;
+  sha?: string;
   mode: FileMode;
-  type?: FileType;
+  type: FileType;
 };
+
+type DeletedFile = {
+  path: string;
+  sha: null;
+};
+
+type TreeEntry = File | DeletedFile;
 
 type DefaultBranchResponse = {
   repository: {
@@ -167,12 +174,12 @@ const getTreeSHA = async (
   if (opts.empty) {
     return baseBranch.target.tree.oid;
   }
-  const tree: File[] = [];
+  const tree: TreeEntry[] = [];
   for (const filePath of opts.files || []) {
     tree.push(await createTreeFile(octokit, opts, filePath));
   }
   for (const filePath of opts.deletedFiles || []) {
-    tree.push(await createDeletedTreeFile(octokit, opts, filePath));
+    tree.push(createDeletedTreeFile(filePath));
   }
   for (const sub of opts.submodules || []) {
     tree.push({
@@ -232,41 +239,23 @@ const createTreeFile = async (
   octokit: GitHub,
   opts: Options,
   filePath: string,
-): Promise<File> => {
+): Promise<TreeEntry> => {
   const file = await getFileContentAndMode(
     octokit,
     opts,
     path.join(opts.rootDir || "", filePath),
     opts.deleteIfNotExist || false,
   );
-  return {
-    path: filePath,
-    sha: file.sha,
-    mode: file.mode,
-    type: getFileType(file.mode),
-    content: file.content,
-  };
+  if (file.sha === null) {
+    return { path: filePath, sha: null };
+  }
+  return { path: filePath, ...file };
 };
 
-const createDeletedTreeFile = async (
-  octokit: GitHub,
-  opts: Options,
-  filePath: string,
-): Promise<File> => {
-  const file = await getFileContentAndMode(
-    octokit,
-    opts,
-    path.join(opts.rootDir || "", filePath),
-    opts.deleteIfNotExist || false,
-    true,
-  );
-  return {
-    path: filePath,
-    mode: file.mode,
-    type: getFileType(file.mode),
-    sha: null,
-  };
-};
+const createDeletedTreeFile = (filePath: string): DeletedFile => ({
+  path: filePath,
+  sha: null,
+});
 
 const getBaseBranch = async (
   octokit: GitHub,
@@ -497,14 +486,10 @@ const getFileContentAndMode = async (
   opts: Options,
   filePath: string,
   deleteIfNotExist: boolean,
-  skipContent = false,
-): Promise<Omit<File, "path">> => {
+): Promise<Omit<File, "path"> | { sha: null }> => {
   const readRegularFile = async (
     mode: FileMode,
   ): Promise<Omit<File, "path">> => {
-    if (skipContent) {
-      return { mode, type: getFileType(mode) };
-    }
     const buf = await readFile(filePath);
     const inline = tryInlineUtf8(buf);
     if (inline !== undefined) {
@@ -557,12 +542,7 @@ const getFileContentAndMode = async (
       throw error;
     }
     // If the file does not exist, remove the file
-    const mode = "100644";
-    return {
-      sha: null,
-      mode: mode,
-      type: getFileType(mode),
-    };
+    return { sha: null };
   }
 };
 

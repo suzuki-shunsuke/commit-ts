@@ -498,18 +498,20 @@ const getFileContentAndMode = async (
   filePath: string,
   deleteIfNotExist: boolean,
   skipContent = false,
-): Promise<File> => {
-  const readRegularFile = async (mode: FileMode): Promise<File> => {
+): Promise<Omit<File, "path">> => {
+  const readRegularFile = async (
+    mode: FileMode,
+  ): Promise<Omit<File, "path">> => {
     if (skipContent) {
-      return { path: filePath, mode, type: getFileType(mode) };
+      return { mode, type: getFileType(mode) };
     }
     const buf = await readFile(filePath);
     const inline = tryInlineUtf8(buf);
     if (inline !== undefined) {
-      return { path: filePath, content: inline, mode, type: getFileType(mode) };
+      return { content: inline, mode, type: getFileType(mode) };
     }
     const sha = await createBlobFromBuffer(octokit, opts.owner, opts.repo, buf);
-    return { path: filePath, sha, mode, type: getFileType(mode) };
+    return { sha, mode, type: getFileType(mode) };
   };
   if (!deleteIfNotExist) {
     const stats = await stat(filePath);
@@ -517,14 +519,12 @@ const getFileContentAndMode = async (
       const commitSHA = await getSubmoduleCommitSHA(filePath);
       if (commitSHA !== undefined) {
         return {
-          path: filePath,
           mode: "160000",
           type: "commit",
           sha: commitSHA,
         };
       }
       return {
-        path: filePath,
         mode: "040000",
         type: "tree",
       };
@@ -537,14 +537,12 @@ const getFileContentAndMode = async (
       const commitSHA = await getSubmoduleCommitSHA(filePath);
       if (commitSHA !== undefined) {
         return {
-          path: filePath,
           mode: "160000",
           type: "commit",
           sha: commitSHA,
         };
       }
       return {
-        path: filePath,
         mode: "040000",
         type: "tree",
       };
@@ -562,7 +560,6 @@ const getFileContentAndMode = async (
     const mode = "100644";
     return {
       sha: null,
-      path: filePath,
       mode: mode,
       type: getFileType(mode),
     };

@@ -1,5 +1,6 @@
 import type * as github from "@actions/github";
 import type { Octokit } from "@octokit/rest";
+import { Buffer } from "node:buffer";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
@@ -168,10 +169,10 @@ const getTreeSHA = async (
   }
   const tree: File[] = [];
   for (const filePath of opts.files || []) {
-    tree.push(await createTreeFile(opts, filePath));
+    tree.push(await createTreeFile(octokit, opts, filePath));
   }
   for (const filePath of opts.deletedFiles || []) {
-    tree.push(await createDeletedTreeFile(opts, filePath));
+    tree.push(await createDeletedTreeFile(octokit, opts, filePath));
   }
   for (const sub of opts.submodules || []) {
     tree.push({
@@ -228,10 +229,13 @@ const getFileType = (mode: FileMode): FileType => {
 };
 
 const createTreeFile = async (
+  octokit: GitHub,
   opts: Options,
   filePath: string,
 ): Promise<File> => {
   const file = await getFileContentAndMode(
+    octokit,
+    opts,
     path.join(opts.rootDir || "", filePath),
     opts.deleteIfNotExist || false,
   );
@@ -245,12 +249,16 @@ const createTreeFile = async (
 };
 
 const createDeletedTreeFile = async (
+  octokit: GitHub,
   opts: Options,
   filePath: string,
 ): Promise<File> => {
   const file = await getFileContentAndMode(
+    octokit,
+    opts,
     path.join(opts.rootDir || "", filePath),
     opts.deleteIfNotExist || false,
+    true,
   );
   return {
     path: filePath,
@@ -454,10 +462,55 @@ const getSubmoduleCommitSHA = async (
   return resolveGitHEAD(gitDir);
 };
 
+/**
+ * @internal Exported for tests.
+ *
+ * Return the buffer as a UTF-8 string iff the bytes are losslessly
+ * representable as UTF-8. `readFile(path, "utf8")` silently replaces invalid
+ * bytes with U+FFFD, so roundtripping through `toString("utf8")` and comparing
+ * bytes is the reliable way to detect lossy decodes.
+ */
+export const tryInlineUtf8 = (buf: Buffer): string | undefined => {
+  const s = buf.toString("utf8");
+  if (Buffer.byteLength(s, "utf8") !== buf.length) return undefined;
+  if (!Buffer.from(s, "utf8").equals(buf)) return undefined;
+  return s;
+};
+
+const createBlobFromBuffer = async (
+  octokit: GitHub,
+  owner: string,
+  repo: string,
+  buf: Buffer,
+): Promise<string> => {
+  const resp = await octokit.rest.git.createBlob({
+    owner,
+    repo,
+    content: buf.toString("base64"),
+    encoding: "base64",
+  });
+  return resp.data.sha;
+};
+
 const getFileContentAndMode = async (
+  octokit: GitHub,
+  opts: Options,
   filePath: string,
   deleteIfNotExist: boolean,
+  skipContent = false,
 ): Promise<File> => {
+  const readRegularFile = async (mode: FileMode): Promise<File> => {
+    if (skipContent) {
+      return { path: filePath, mode, type: getFileType(mode) };
+    }
+    const buf = await readFile(filePath);
+    const inline = tryInlineUtf8(buf);
+    if (inline !== undefined) {
+      return { path: filePath, content: inline, mode, type: getFileType(mode) };
+    }
+    const sha = await createBlobFromBuffer(octokit, opts.owner, opts.repo, buf);
+    return { path: filePath, sha, mode, type: getFileType(mode) };
+  };
   if (!deleteIfNotExist) {
     const stats = await stat(filePath);
     if (stats.isDirectory()) {
@@ -476,13 +529,7 @@ const getFileContentAndMode = async (
         type: "tree",
       };
     }
-    const mode = getFileMode(stats.mode);
-    return {
-      path: filePath,
-      content: await readFile(filePath, "utf8"),
-      mode: mode,
-      type: getFileType(mode),
-    };
+    return readRegularFile(getFileMode(stats.mode));
   }
   try {
     const stats = await stat(filePath);
@@ -502,14 +549,7 @@ const getFileContentAndMode = async (
         type: "tree",
       };
     }
-    const content = await readFile(filePath, "utf8");
-    const mode = getFileMode(stats.mode);
-    return {
-      path: filePath,
-      content,
-      mode: mode,
-      type: getFileType(mode),
-    };
+    return await readRegularFile(getFileMode(stats.mode));
   } catch (error: unknown) {
     if (typeof error !== "object" || error === undefined) {
       throw error;

@@ -19,6 +19,7 @@ export type Options = {
   baseSHA?: string; // By default, the base branch's latest commit is used
   baseBranch?: string; // By default, if branch exists, it is used as the base branch. Otherwise, the default branch is used
   noParent?: boolean; // if true, do not use parent commit
+  useBaseTree?: boolean; // if true, use base branch's tree as base_tree. Defaults to !noParent
   deletedFiles?: string[]; // files to delete
   deleteIfNotExist?: boolean; // if true, delete files if they don't exist
   submodules?: Array<{ path: string; sha: string }>; // submodule entries to add to the tree
@@ -190,7 +191,8 @@ const getTreeSHA = async (
       sha: sub.sha,
     });
   }
-  const baseTree = opts.noParent ? undefined : baseBranch.target.tree.oid;
+  const useBaseTree = opts.useBaseTree ?? !opts.noParent;
+  const baseTree = useBaseTree ? baseBranch.target.tree.oid : undefined;
   logger.info(
     `creating a tree with ${tree.length} files: owner=${opts.owner} repo=${opts.repo} base_tree=${baseTree}`,
   );

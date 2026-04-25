@@ -107,6 +107,7 @@ type File = {
 type DeletedFile = {
   path: string;
   sha: null;
+  mode: FileMode;
 };
 
 type TreeEntry = File | DeletedFile;
@@ -247,7 +248,8 @@ const createTreeFile = async (
     opts.deleteIfNotExist || false,
   );
   if (file.sha === null) {
-    return { path: filePath, sha: null };
+    // mode is required by the Create a tree API even for deletions (sha: null).
+    return { path: filePath, sha: null, mode: "100644" };
   }
   return { path: filePath, ...file };
 };
@@ -255,6 +257,7 @@ const createTreeFile = async (
 const createDeletedTreeFile = (filePath: string): DeletedFile => ({
   path: filePath,
   sha: null,
+  mode: "100644",
 });
 
 const getBaseBranch = async (

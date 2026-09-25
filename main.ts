@@ -66,10 +66,7 @@ export const createCommit = async (
     // Update the reference if the branch exists
     return await updateRef(octokit, opts, commit.data.sha, logger);
   } catch (error: unknown) {
-    if (!isError(error)) {
-      throw error;
-    }
-    if (!error.message.includes("Reference does not exist")) {
+    if (!shouldCreateRef(error)) {
       throw error;
     }
     // Create a reference if the branch does not exist
@@ -91,6 +88,30 @@ const isError = (value: unknown): value is Error => {
 
 type Error = {
   message: string;
+};
+
+// Whether an error from updateRef means "the branch doesn't exist yet", in which case
+// createRef should be attempted.
+//
+// The API does not answer this the same way for every credential. Updating a
+// non-existent ref returns:
+//
+//   - 422 "Reference does not exist" for a PAT or an OAuth token
+//   - 403 "Resource not accessible by integration" for a GitHub App installation token
+//
+// Matching only on the 422 message therefore breaks the "create a new branch" case
+// whenever the caller authenticates as a GitHub App, which is the recommended way to
+// authenticate in CI. Treating 403 as "possibly missing" is safe: createRef runs next
+// and raises the permission error itself when the token really lacks access.
+export const shouldCreateRef = (error: unknown): boolean => {
+  if (!isError(error)) {
+    return false;
+  }
+  if (error.message.includes("Reference does not exist")) {
+    return true;
+  }
+  const status = (error as { status?: unknown }).status;
+  return status === 403 || status === 404;
 };
 
 type FileType = "blob" | "tree" | "commit";

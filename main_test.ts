@@ -1,6 +1,6 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertThrows } from "@std/assert";
 import { Buffer } from "node:buffer";
-import { tryInlineUtf8 } from "./main.ts";
+import { createSymlinkTreeEntry, tryInlineUtf8 } from "./main.ts";
 
 Deno.test("tryInlineUtf8: ASCII", () => {
   const buf = Buffer.from("hello world", "utf8");
@@ -41,4 +41,24 @@ Deno.test("tryInlineUtf8: truncated multi-byte sequence returns undefined", () =
   // First byte of a 3-byte sequence, but the continuation bytes are missing.
   const buf = Buffer.from([0xe3, 0x81]);
   assertEquals(tryInlineUtf8(buf), undefined);
+});
+
+Deno.test("createSymlinkTreeEntry: mode 120000 blob whose content is the target", () => {
+  assertEquals(
+    createSymlinkTreeEntry({ path: "dir/link.txt", target: "../shared.txt" }),
+    {
+      path: "dir/link.txt",
+      mode: "120000",
+      type: "blob",
+      content: "../shared.txt",
+    },
+  );
+});
+
+Deno.test("createSymlinkTreeEntry: empty target throws", () => {
+  assertThrows(() => createSymlinkTreeEntry({ path: "link", target: "" }));
+});
+
+Deno.test("createSymlinkTreeEntry: empty path throws", () => {
+  assertThrows(() => createSymlinkTreeEntry({ path: "", target: "foo" }));
 });

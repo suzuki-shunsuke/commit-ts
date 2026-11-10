@@ -23,8 +23,17 @@ export type Options = {
   deletedFiles?: string[]; // files to delete
   deleteIfNotExist?: boolean; // if true, delete files if they don't exist
   submodules?: Array<{ path: string; sha: string }>; // submodule entries to add to the tree
+  // symlink entries to add to the tree.
+  // target is the link target (the result of readlink(2)), which is stored as the blob content with mode 120000.
+  // The file system isn't accessed, so dangling symlinks are supported.
+  symlinks?: Symlink[];
   forcePush?: boolean; // if true, force push the commit
   logger?: Logger;
+};
+
+export type Symlink = {
+  path: string;
+  target: string;
 };
 
 // Created commit, base ref
@@ -40,7 +49,10 @@ export const createCommit = async (
   octokit: GitHub,
   opts: Options,
 ): Promise<Result | undefined> => {
-  if (!opts.files?.length && !opts.deletedFiles?.length && !opts.empty) {
+  if (
+    !opts.files?.length && !opts.deletedFiles?.length &&
+    !opts.submodules?.length && !opts.symlinks?.length && !opts.empty
+  ) {
     // If no files are passed and empty is false, do nothing
     return undefined;
   }
@@ -191,6 +203,9 @@ const getTreeSHA = async (
       sha: sub.sha,
     });
   }
+  for (const symlink of opts.symlinks || []) {
+    tree.push(createSymlinkTreeEntry(symlink));
+  }
   const useBaseTree = opts.useBaseTree ?? !opts.noParent;
   const baseTree = useBaseTree ? baseBranch.target.tree.oid : undefined;
   logger.info(
@@ -254,6 +269,26 @@ const createTreeFile = async (
     return { path: filePath, sha: null, mode: "100644" };
   }
   return { path: filePath, ...file };
+};
+
+/**
+ * @internal Exported for tests.
+ *
+ * A symlink is a blob whose content is the link target, with mode 120000.
+ */
+export const createSymlinkTreeEntry = (symlink: Symlink): File => {
+  if (!symlink.path) {
+    throw new Error("symlink path is required");
+  }
+  if (!symlink.target) {
+    throw new Error(`symlink target is required: ${symlink.path}`);
+  }
+  return {
+    path: symlink.path,
+    mode: "120000",
+    type: "blob",
+    content: symlink.target,
+  };
 };
 
 const createDeletedTreeFile = (filePath: string): DeletedFile => ({

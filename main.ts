@@ -284,11 +284,7 @@ const validateSymlinks = (opts: Options) => {
  * Only entries related to symlinks are checked to keep the behavior without symlinks.
  */
 export const validateTree = (tree: TreeEntry[]): void => {
-  const symlinkPaths = new Set(
-    tree.filter((e) => e.sha !== null && e.mode === "120000").map((e) =>
-      e.path
-    ),
-  );
+  const symlinkPaths = getSymlinkPaths(tree);
   if (symlinkPaths.size === 0) {
     return;
   }
@@ -317,7 +313,6 @@ export const validateTree = (tree: TreeEntry[]): void => {
   }
 };
 
-// parentDirs("a/b/c") returns ["a", "a/b"].
 /**
  * @internal Exported for tests.
  *
@@ -331,11 +326,7 @@ export const validateTree = (tree: TreeEntry[]): void => {
 export const removeDeletionsUnderSymlinks = (
   tree: TreeEntry[],
 ): TreeEntry[] => {
-  const symlinkPaths = new Set(
-    tree.filter((e) => e.sha !== null && e.mode === "120000").map((e) =>
-      e.path
-    ),
-  );
+  const symlinkPaths = getSymlinkPaths(tree);
   if (symlinkPaths.size === 0) {
     return tree;
   }
@@ -345,6 +336,14 @@ export const removeDeletionsUnderSymlinks = (
   );
 };
 
+const getSymlinkPaths = (tree: TreeEntry[]): Set<string> =>
+  new Set(
+    tree.filter((e) => e.sha !== null && e.mode === "120000").map((e) =>
+      e.path
+    ),
+  );
+
+// parentDirs("a/b/c") returns ["a", "a/b"].
 const parentDirs = (p: string): string[] => {
   const elems = p.split("/");
   return elems.slice(1).map((_, i) => elems.slice(0, i + 1).join("/"));

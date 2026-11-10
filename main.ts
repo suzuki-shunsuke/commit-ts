@@ -23,8 +23,19 @@ export type Options = {
   deletedFiles?: string[]; // files to delete
   deleteIfNotExist?: boolean; // if true, delete files if they don't exist
   submodules?: Array<{ path: string; sha: string }>; // submodule entries to add to the tree
+  // symlink entries to add to the tree.
+  // target is the link target (the result of readlink(2)), which is stored as the blob content with mode 120000.
+  // The file system isn't accessed, so dangling symlinks are supported.
+  // target is sent as a UTF-8 string, so a target that isn't valid UTF-8 can't be stored as is.
+  // A symlink path must not be passed to files, deletedFiles, or submodules.
+  symlinks?: Symlink[];
   forcePush?: boolean; // if true, force push the commit
   logger?: Logger;
+};
+
+export type Symlink = {
+  path: string;
+  target: string;
 };
 
 // Created commit, base ref
@@ -40,8 +51,11 @@ export const createCommit = async (
   octokit: GitHub,
   opts: Options,
 ): Promise<Result | undefined> => {
-  if (!opts.files?.length && !opts.deletedFiles?.length && !opts.empty) {
-    // If no files are passed and empty is false, do nothing
+  if (
+    !opts.files?.length && !opts.deletedFiles?.length &&
+    !opts.submodules?.length && !opts.symlinks?.length && !opts.empty
+  ) {
+    // If nothing to commit is passed and empty is false, do nothing
     return undefined;
   }
   validateOptions(opts);
@@ -176,7 +190,7 @@ const getTreeSHA = async (
   if (opts.empty) {
     return baseBranch.target.tree.oid;
   }
-  const tree: TreeEntry[] = [];
+  let tree: TreeEntry[] = [];
   for (const filePath of opts.files || []) {
     tree.push(await createTreeFile(octokit, opts, filePath));
   }
@@ -191,6 +205,11 @@ const getTreeSHA = async (
       sha: sub.sha,
     });
   }
+  for (const symlink of opts.symlinks || []) {
+    tree.push(createSymlinkTreeEntry(symlink));
+  }
+  validateTree(tree);
+  tree = removeDeletionsUnderSymlinks(tree);
   const useBaseTree = opts.useBaseTree ?? !opts.noParent;
   const baseTree = useBaseTree ? baseBranch.target.tree.oid : undefined;
   logger.info(
@@ -207,13 +226,127 @@ const getTreeSHA = async (
   return treeResp.data.sha;
 };
 
-const validateOptions = (opts: Options) => {
+/**
+ * @internal Exported for tests.
+ *
+ * Validate options before any API call or file access.
+ */
+export const validateOptions = (opts: Options): void => {
   for (const key of ["owner", "repo", "branch", "message"] as const) {
     // Check required options
     if (!opts[key]) {
       throw new Error(`${key} is required`);
     }
   }
+  validateSymlinks(opts);
+};
+
+const validateSymlinks = (opts: Options) => {
+  if (!opts.symlinks?.length) {
+    return;
+  }
+  // A path must not be passed twice, otherwise the tree has two entries for the same path.
+  const otherPaths = new Set([
+    ...(opts.files || []),
+    ...(opts.deletedFiles || []),
+    ...(opts.submodules || []).map((sub) => sub.path),
+  ]);
+  const symlinkPaths = new Set<string>();
+  for (const symlink of opts.symlinks) {
+    if (!symlink.path) {
+      throw new Error("symlink path is required");
+    }
+    if (!symlink.target) {
+      throw new Error(`symlink target is required: ${symlink.path}`);
+    }
+    if (symlinkPaths.has(symlink.path)) {
+      throw new Error(`symlink path is duplicated: ${symlink.path}`);
+    }
+    if (otherPaths.has(symlink.path)) {
+      throw new Error(
+        `symlink path must not be passed to files, deletedFiles, or submodules: ${symlink.path}`,
+      );
+    }
+    symlinkPaths.add(symlink.path);
+  }
+};
+
+/**
+ * @internal Exported for tests.
+ *
+ * Validate the tree entries before calling the Create a tree API.
+ *
+ * A symlink can't contain other paths, and a symlink can't be under a file or a submodule.
+ * This is checked after the entries are built, because whether an entry of files is
+ * a deletion, a file, a directory, or a submodule is decided by accessing the file system.
+ * Deletions are allowed under a symlink, e.g. when a directory is replaced with a symlink.
+ * They are removed by removeDeletionsUnderSymlinks.
+ * Only entries related to symlinks are checked to keep the behavior without symlinks.
+ */
+export const validateTree = (tree: TreeEntry[]): void => {
+  const symlinkPaths = getSymlinkPaths(tree);
+  if (symlinkPaths.size === 0) {
+    return;
+  }
+  // Paths which can't contain other paths
+  const leafPaths = new Set(
+    tree.filter((e) => e.sha !== null && e.mode !== "040000").map((e) =>
+      e.path
+    ),
+  );
+  for (const entry of tree) {
+    if (entry.sha === null) {
+      continue;
+    }
+    for (const parent of parentDirs(entry.path)) {
+      if (symlinkPaths.has(parent)) {
+        throw new Error(
+          `${entry.path} must not be under the symlink ${parent}`,
+        );
+      }
+      if (symlinkPaths.has(entry.path) && leafPaths.has(parent)) {
+        throw new Error(
+          `the symlink ${entry.path} must not be under ${parent}, which isn't a directory`,
+        );
+      }
+    }
+  }
+};
+
+/**
+ * @internal Exported for tests.
+ *
+ * Remove deletions under symlinks.
+ *
+ * When a directory is replaced with a symlink, the symlink entry replaces the whole directory,
+ * so deletions of files in the directory are redundant.
+ * Moreover, the Create a tree API fails with GitRPC::BadObjectState if only some files
+ * in the directory are deleted along with the symlink.
+ */
+export const removeDeletionsUnderSymlinks = (
+  tree: TreeEntry[],
+): TreeEntry[] => {
+  const symlinkPaths = getSymlinkPaths(tree);
+  if (symlinkPaths.size === 0) {
+    return tree;
+  }
+  return tree.filter((e) =>
+    e.sha !== null ||
+    !parentDirs(e.path).some((parent) => symlinkPaths.has(parent))
+  );
+};
+
+const getSymlinkPaths = (tree: TreeEntry[]): Set<string> =>
+  new Set(
+    tree.filter((e) => e.sha !== null && e.mode === "120000").map((e) =>
+      e.path
+    ),
+  );
+
+// parentDirs("a/b/c") returns ["a", "a/b"].
+const parentDirs = (p: string): string[] => {
+  const elems = p.split("/");
+  return elems.slice(1).map((_, i) => elems.slice(0, i + 1).join("/"));
 };
 
 const getFileType = (mode: FileMode): FileType => {
@@ -254,6 +387,21 @@ const createTreeFile = async (
     return { path: filePath, sha: null, mode: "100644" };
   }
   return { path: filePath, ...file };
+};
+
+/**
+ * @internal Exported for tests.
+ *
+ * A symlink is a blob whose content is the link target, with mode 120000.
+ * The symlink must be validated by validateOptions beforehand.
+ */
+export const createSymlinkTreeEntry = (symlink: Symlink): File => {
+  return {
+    path: symlink.path,
+    mode: "120000",
+    type: "blob",
+    content: symlink.target,
+  };
 };
 
 const createDeletedTreeFile = (filePath: string): DeletedFile => ({

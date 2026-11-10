@@ -5,6 +5,7 @@ import {
   createSymlinkTreeEntry,
   type GitHub,
   type Options,
+  removeDeletionsUnderSymlinks,
   tryInlineUtf8,
   validateOptions,
   validateTree,
@@ -231,6 +232,41 @@ for (
     validateTree(tree);
   });
 }
+
+Deno.test("removeDeletionsUnderSymlinks: deletions under a symlink are removed", () => {
+  assertEquals(
+    removeDeletionsUnderSymlinks([
+      deleted("dir/a.txt"),
+      deleted("dir/b/c.txt"),
+      deleted("dir-2/a.txt"),
+      deleted("other.txt"),
+      file("x.txt"),
+      symlink("dir"),
+    ]),
+    [
+      deleted("dir-2/a.txt"),
+      deleted("other.txt"),
+      file("x.txt"),
+      symlink("dir"),
+    ],
+  );
+});
+
+Deno.test("removeDeletionsUnderSymlinks: no symlinks", () => {
+  const tree = [deleted("dir/a.txt"), file("x.txt")];
+  assertEquals(removeDeletionsUnderSymlinks(tree), tree);
+});
+
+Deno.test("createCommit: replace a directory with a symlink", async () => {
+  const { octokit, calls } = fakeOctokit();
+  await createCommit(octokit, {
+    ...baseOptions,
+    deletedFiles: ["dir/a.txt"],
+    symlinks: [{ path: "dir", target: "other" }],
+    logger: { info: () => {} },
+  });
+  assertEquals(calls.tree, [symlink("dir", "other")]);
+});
 
 // fakeOctokit records the tree passed to createTree.
 const fakeOctokit = () => {

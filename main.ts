@@ -190,7 +190,7 @@ const getTreeSHA = async (
   if (opts.empty) {
     return baseBranch.target.tree.oid;
   }
-  const tree: TreeEntry[] = [];
+  let tree: TreeEntry[] = [];
   for (const filePath of opts.files || []) {
     tree.push(await createTreeFile(octokit, opts, filePath));
   }
@@ -209,6 +209,7 @@ const getTreeSHA = async (
     tree.push(createSymlinkTreeEntry(symlink));
   }
   validateTree(tree);
+  tree = removeDeletionsUnderSymlinks(tree);
   const useBaseTree = opts.useBaseTree ?? !opts.noParent;
   const baseTree = useBaseTree ? baseBranch.target.tree.oid : undefined;
   logger.info(
@@ -279,6 +280,7 @@ const validateSymlinks = (opts: Options) => {
  * This is checked after the entries are built, because whether an entry of files is
  * a deletion, a file, a directory, or a submodule is decided by accessing the file system.
  * Deletions are allowed under a symlink, e.g. when a directory is replaced with a symlink.
+ * They are removed by removeDeletionsUnderSymlinks.
  * Only entries related to symlinks are checked to keep the behavior without symlinks.
  */
 export const validateTree = (tree: TreeEntry[]): void => {
@@ -316,6 +318,33 @@ export const validateTree = (tree: TreeEntry[]): void => {
 };
 
 // parentDirs("a/b/c") returns ["a", "a/b"].
+/**
+ * @internal Exported for tests.
+ *
+ * Remove deletions under symlinks.
+ *
+ * When a directory is replaced with a symlink, the symlink entry replaces the whole directory,
+ * so deletions of files in the directory are redundant.
+ * Moreover, the Create a tree API fails with GitRPC::BadObjectState if only some files
+ * in the directory are deleted along with the symlink.
+ */
+export const removeDeletionsUnderSymlinks = (
+  tree: TreeEntry[],
+): TreeEntry[] => {
+  const symlinkPaths = new Set(
+    tree.filter((e) => e.sha !== null && e.mode === "120000").map((e) =>
+      e.path
+    ),
+  );
+  if (symlinkPaths.size === 0) {
+    return tree;
+  }
+  return tree.filter((e) =>
+    e.sha !== null ||
+    !parentDirs(e.path).some((parent) => symlinkPaths.has(parent))
+  );
+};
+
 const parentDirs = (p: string): string[] => {
   const elems = p.split("/");
   return elems.slice(1).map((_, i) => elems.slice(0, i + 1).join("/"));

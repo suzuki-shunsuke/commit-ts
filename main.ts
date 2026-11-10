@@ -26,6 +26,8 @@ export type Options = {
   // symlink entries to add to the tree.
   // target is the link target (the result of readlink(2)), which is stored as the blob content with mode 120000.
   // The file system isn't accessed, so dangling symlinks are supported.
+  // target is sent as a UTF-8 string, so a target that isn't valid UTF-8 can't be stored as is.
+  // A symlink path must not be passed to files, deletedFiles, or submodules.
   symlinks?: Symlink[];
   forcePush?: boolean; // if true, force push the commit
   logger?: Logger;
@@ -222,12 +224,48 @@ const getTreeSHA = async (
   return treeResp.data.sha;
 };
 
-const validateOptions = (opts: Options) => {
+/**
+ * @internal Exported for tests.
+ *
+ * Validate options before any API call or file access.
+ */
+export const validateOptions = (opts: Options): void => {
   for (const key of ["owner", "repo", "branch", "message"] as const) {
     // Check required options
     if (!opts[key]) {
       throw new Error(`${key} is required`);
     }
+  }
+  validateSymlinks(opts);
+};
+
+const validateSymlinks = (opts: Options) => {
+  if (!opts.symlinks?.length) {
+    return;
+  }
+  // A path must not be passed twice, otherwise the tree has two entries for the same path.
+  const otherPaths = new Set([
+    ...(opts.files || []),
+    ...(opts.deletedFiles || []),
+    ...(opts.submodules || []).map((sub) => sub.path),
+  ]);
+  const symlinkPaths = new Set<string>();
+  for (const symlink of opts.symlinks) {
+    if (!symlink.path) {
+      throw new Error("symlink path is required");
+    }
+    if (!symlink.target) {
+      throw new Error(`symlink target is required: ${symlink.path}`);
+    }
+    if (symlinkPaths.has(symlink.path)) {
+      throw new Error(`symlink path is duplicated: ${symlink.path}`);
+    }
+    if (otherPaths.has(symlink.path)) {
+      throw new Error(
+        `symlink path must not be passed to files, deletedFiles, or submodules: ${symlink.path}`,
+      );
+    }
+    symlinkPaths.add(symlink.path);
   }
 };
 
@@ -275,14 +313,9 @@ const createTreeFile = async (
  * @internal Exported for tests.
  *
  * A symlink is a blob whose content is the link target, with mode 120000.
+ * The symlink must be validated by validateOptions beforehand.
  */
 export const createSymlinkTreeEntry = (symlink: Symlink): File => {
-  if (!symlink.path) {
-    throw new Error("symlink path is required");
-  }
-  if (!symlink.target) {
-    throw new Error(`symlink target is required: ${symlink.path}`);
-  }
   return {
     path: symlink.path,
     mode: "120000",

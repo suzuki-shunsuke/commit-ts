@@ -267,6 +267,32 @@ const validateSymlinks = (opts: Options) => {
     }
     symlinkPaths.add(symlink.path);
   }
+  // A symlink and a submodule are leaves of the tree,
+  // so no symlink or submodule can be under a symlink, and vice versa.
+  // files and deletedFiles aren't checked, because a path under a symlink can be
+  // a deletion, e.g. when a directory is replaced with a symlink.
+  const leafPaths = new Set([
+    ...symlinkPaths,
+    ...(opts.submodules || []).map((sub) => sub.path),
+  ]);
+  for (const leaf of leafPaths) {
+    for (const parent of parentDirs(leaf)) {
+      if (
+        leafPaths.has(parent) &&
+        (symlinkPaths.has(parent) || symlinkPaths.has(leaf))
+      ) {
+        throw new Error(
+          `${leaf} must not be under ${parent}, because a symlink and a submodule can't contain other paths`,
+        );
+      }
+    }
+  }
+};
+
+// parentDirs("a/b/c") returns ["a", "a/b"].
+const parentDirs = (p: string): string[] => {
+  const elems = p.split("/");
+  return elems.slice(1).map((_, i) => elems.slice(0, i + 1).join("/"));
 };
 
 const getFileType = (mode: FileMode): FileType => {

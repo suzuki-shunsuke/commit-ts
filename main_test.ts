@@ -137,6 +137,48 @@ for (
   });
 }
 
+for (
+  const [name, opts] of [
+    ["symlink under a symlink", {
+      symlinks: [{ path: "a", target: "x" }, { path: "a/b", target: "y" }],
+    }],
+    ["symlink under a submodule", {
+      submodules: [{ path: "a", sha: "abc" }],
+      symlinks: [{ path: "a/b/c", target: "y" }],
+    }],
+    ["submodule under a symlink", {
+      submodules: [{ path: "a/b", sha: "abc" }],
+      symlinks: [{ path: "a", target: "x" }],
+    }],
+  ] as Array<[string, Partial<Options>]>
+) {
+  Deno.test(`validateOptions: ${name} throws`, () => {
+    assertThrows(
+      () => validateOptions({ ...baseOptions, ...opts }),
+      Error,
+      "because a symlink and a submodule can't contain other paths",
+    );
+  });
+}
+
+Deno.test("validateOptions: files and deletedFiles under a symlink are allowed", () => {
+  // e.g. a directory is replaced with a symlink
+  validateOptions({
+    ...baseOptions,
+    files: ["dir/a.txt"],
+    deletedFiles: ["dir/b.txt"],
+    symlinks: [{ path: "dir", target: "other" }],
+  });
+});
+
+Deno.test("validateOptions: sibling paths sharing a prefix are allowed", () => {
+  validateOptions({
+    ...baseOptions,
+    submodules: [{ path: "ab", sha: "abc" }],
+    symlinks: [{ path: "a", target: "x" }, { path: "a-b", target: "y" }],
+  });
+});
+
 // fakeOctokit records the tree passed to createTree.
 const fakeOctokit = () => {
   const calls: { tree?: unknown[] } = {};

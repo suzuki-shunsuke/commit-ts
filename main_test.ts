@@ -7,6 +7,7 @@ import {
   type Options,
   tryInlineUtf8,
   validateOptions,
+  validateTree,
 } from "./main.ts";
 
 Deno.test("tryInlineUtf8: ASCII", () => {
@@ -137,47 +138,99 @@ for (
   });
 }
 
+const symlink = (path: string, target = "x") => ({
+  path,
+  mode: "120000" as const,
+  type: "blob" as const,
+  content: target,
+});
+const file = (path: string) => ({
+  path,
+  mode: "100644" as const,
+  type: "blob" as const,
+  content: "",
+});
+const deleted = (path: string) => ({
+  path,
+  sha: null,
+  mode: "100644" as const,
+});
+const submodule = (path: string) => ({
+  path,
+  mode: "160000" as const,
+  type: "commit" as const,
+  sha: "abc",
+});
+const dir = (path: string) => ({
+  path,
+  mode: "040000" as const,
+  type: "tree" as const,
+});
+
 for (
-  const [name, opts] of [
-    ["symlink under a symlink", {
-      symlinks: [{ path: "a", target: "x" }, { path: "a/b", target: "y" }],
-    }],
-    ["symlink under a submodule", {
-      submodules: [{ path: "a", sha: "abc" }],
-      symlinks: [{ path: "a/b/c", target: "y" }],
-    }],
-    ["submodule under a symlink", {
-      submodules: [{ path: "a/b", sha: "abc" }],
-      symlinks: [{ path: "a", target: "x" }],
-    }],
-  ] as Array<[string, Partial<Options>]>
+  const [name, tree, message] of [
+    [
+      "symlink under a symlink",
+      [symlink("a"), symlink("a/b")],
+      "a/b must not be under the symlink a",
+    ],
+    [
+      "file under a symlink",
+      [file("dir/a.txt"), symlink("dir")],
+      "dir/a.txt must not be under the symlink dir",
+    ],
+    [
+      "submodule under a symlink",
+      [submodule("a/b"), symlink("a")],
+      "a/b must not be under the symlink a",
+    ],
+    [
+      "directory under a symlink",
+      [dir("a/b"), symlink("a")],
+      "a/b must not be under the symlink a",
+    ],
+    [
+      "symlink under a submodule",
+      [submodule("a"), symlink("a/b/c")],
+      "the symlink a/b/c must not be under a, which isn't a directory",
+    ],
+    [
+      "symlink under a file",
+      [file("a"), symlink("a/b")],
+      "the symlink a/b must not be under a, which isn't a directory",
+    ],
+  ] as Array<[string, Parameters<typeof validateTree>[0], string]>
 ) {
-  Deno.test(`validateOptions: ${name} throws`, () => {
-    assertThrows(
-      () => validateOptions({ ...baseOptions, ...opts }),
-      Error,
-      "because a symlink and a submodule can't contain other paths",
-    );
+  Deno.test(`validateTree: ${name} throws`, () => {
+    assertThrows(() => validateTree(tree), Error, message);
   });
 }
 
-Deno.test("validateOptions: files and deletedFiles under a symlink are allowed", () => {
-  // e.g. a directory is replaced with a symlink
-  validateOptions({
-    ...baseOptions,
-    files: ["dir/a.txt"],
-    deletedFiles: ["dir/b.txt"],
-    symlinks: [{ path: "dir", target: "other" }],
+for (
+  const [name, tree] of [
+    ["deletions under a symlink (a directory is replaced with a symlink)", [
+      deleted("dir/a.txt"),
+      deleted("dir/b/c.txt"),
+      symlink("dir"),
+    ]],
+    ["symlink under a directory", [dir("a"), symlink("a/b")]],
+    ["symlink under a deleted file (a file is replaced with a directory)", [
+      deleted("a"),
+      symlink("a/b"),
+    ]],
+    ["sibling paths sharing a prefix", [
+      submodule("ab"),
+      file("ab-c/d"),
+      symlink("a"),
+      symlink("a-b"),
+    ]],
+    ["no symlinks (not checked)", [submodule("a"), file("a/b")]],
+  ] as Array<[string, Parameters<typeof validateTree>[0]]>
+) {
+  Deno.test(`validateTree: ${name} is allowed`, () => {
+    validateTree(tree);
   });
-});
-
-Deno.test("validateOptions: sibling paths sharing a prefix are allowed", () => {
-  validateOptions({
-    ...baseOptions,
-    submodules: [{ path: "ab", sha: "abc" }],
-    symlinks: [{ path: "a", target: "x" }, { path: "a-b", target: "y" }],
-  });
-});
+}
 
 // fakeOctokit records the tree passed to createTree.
 const fakeOctokit = () => {

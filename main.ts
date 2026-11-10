@@ -55,7 +55,7 @@ export const createCommit = async (
     !opts.files?.length && !opts.deletedFiles?.length &&
     !opts.submodules?.length && !opts.symlinks?.length && !opts.empty
   ) {
-    // If no files are passed and empty is false, do nothing
+    // If nothing to commit is passed and empty is false, do nothing
     return undefined;
   }
   validateOptions(opts);
@@ -208,6 +208,7 @@ const getTreeSHA = async (
   for (const symlink of opts.symlinks || []) {
     tree.push(createSymlinkTreeEntry(symlink));
   }
+  validateTree(tree);
   const useBaseTree = opts.useBaseTree ?? !opts.noParent;
   const baseTree = useBaseTree ? baseBranch.target.tree.oid : undefined;
   logger.info(
@@ -267,22 +268,47 @@ const validateSymlinks = (opts: Options) => {
     }
     symlinkPaths.add(symlink.path);
   }
-  // A symlink and a submodule are leaves of the tree,
-  // so no symlink or submodule can be under a symlink, and vice versa.
-  // files and deletedFiles aren't checked, because a path under a symlink can be
-  // a deletion, e.g. when a directory is replaced with a symlink.
-  const leafPaths = new Set([
-    ...symlinkPaths,
-    ...(opts.submodules || []).map((sub) => sub.path),
-  ]);
-  for (const leaf of leafPaths) {
-    for (const parent of parentDirs(leaf)) {
-      if (
-        leafPaths.has(parent) &&
-        (symlinkPaths.has(parent) || symlinkPaths.has(leaf))
-      ) {
+};
+
+/**
+ * @internal Exported for tests.
+ *
+ * Validate the tree entries before calling the Create a tree API.
+ *
+ * A symlink can't contain other paths, and a symlink can't be under a file or a submodule.
+ * This is checked after the entries are built, because whether an entry of files is
+ * a deletion, a file, a directory, or a submodule is decided by accessing the file system.
+ * Deletions are allowed under a symlink, e.g. when a directory is replaced with a symlink.
+ * Only entries related to symlinks are checked to keep the behavior without symlinks.
+ */
+export const validateTree = (tree: TreeEntry[]): void => {
+  const symlinkPaths = new Set(
+    tree.filter((e) => e.sha !== null && e.mode === "120000").map((e) =>
+      e.path
+    ),
+  );
+  if (symlinkPaths.size === 0) {
+    return;
+  }
+  // Paths which can't contain other paths
+  const leafPaths = new Set(
+    tree.filter((e) => e.sha !== null && e.mode !== "040000").map((e) =>
+      e.path
+    ),
+  );
+  for (const entry of tree) {
+    if (entry.sha === null) {
+      continue;
+    }
+    for (const parent of parentDirs(entry.path)) {
+      if (symlinkPaths.has(parent)) {
         throw new Error(
-          `${leaf} must not be under ${parent}, because a symlink and a submodule can't contain other paths`,
+          `${entry.path} must not be under the symlink ${parent}`,
+        );
+      }
+      if (symlinkPaths.has(entry.path) && leafPaths.has(parent)) {
+        throw new Error(
+          `the symlink ${entry.path} must not be under ${parent}, which isn't a directory`,
         );
       }
     }

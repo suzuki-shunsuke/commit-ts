@@ -212,16 +212,41 @@ const getTreeSHA = async (
   tree = removeDeletionsUnderSymlinks(tree);
   const useBaseTree = opts.useBaseTree ?? !opts.noParent;
   const baseTree = useBaseTree ? baseBranch.target.tree.oid : undefined;
-  if (baseTree) {
-    for (
-      const parent of await findReplacedParents(octokit, opts, baseTree, tree)
-    ) {
+  try {
+    return await createTree(octokit, opts, tree, baseTree, logger);
+  } catch (error: unknown) {
+    if (!baseTree || !isBadObjectState(error)) {
+      throw error;
+    }
+    // A path may be added under a file or a symlink in the base tree,
+    // i.e. a file or a symlink replaced with a directory.
+    // It's checked only on this error to avoid extra API calls.
+    const replaced = await findReplacedParents(octokit, opts, baseTree, tree);
+    if (replaced.length === 0) {
+      throw error;
+    }
+    for (const parent of replaced) {
       logger.info(
         `deleting ${parent}, which is a file or a symlink in the base tree, to add paths under it`,
       );
-      tree.push(createDeletedTreeFile(parent));
     }
+    return await createTree(
+      octokit,
+      opts,
+      [...replaced.map(createDeletedTreeFile), ...tree],
+      baseTree,
+      logger,
+    );
   }
+};
+
+const createTree = async (
+  octokit: GitHub,
+  opts: Options,
+  tree: TreeEntry[],
+  baseTree: string | undefined,
+  logger: Logger,
+): Promise<string> => {
   logger.info(
     `creating a tree with ${tree.length} files: owner=${opts.owner} repo=${opts.repo} base_tree=${baseTree}`,
   );
@@ -235,6 +260,9 @@ const getTreeSHA = async (
   });
   return treeResp.data.sha;
 };
+
+const isBadObjectState = (error: unknown): boolean =>
+  isError(error) && error.message.includes("BadObjectState");
 
 /**
  * @internal Exported for tests.
@@ -357,19 +385,17 @@ const getSymlinkPaths = (tree: TreeEntry[]): Set<string> =>
  * @internal Exported for tests.
  *
  * Returns the parent directories of the entries which add paths, excluding
- * paths which are already deleted.
+ * paths which are entries of the tree themselves (e.g. already deleted).
  */
 export const listParentDirs = (tree: TreeEntry[]): string[] => {
-  const deleted = new Set(
-    tree.filter((e) => e.sha === null).map((e) => e.path),
-  );
+  const paths = new Set(tree.map((e) => e.path));
   const parents = new Set<string>();
   for (const entry of tree) {
     if (entry.sha === null) {
       continue;
     }
     for (const parent of parentDirs(entry.path)) {
-      if (!deleted.has(parent)) {
+      if (!paths.has(parent)) {
         parents.add(parent);
       }
     }
@@ -377,31 +403,24 @@ export const listParentDirs = (tree: TreeEntry[]): string[] => {
   return [...parents];
 };
 
-type BaseTreeEntry = {
-  name: string;
-  type: string; // blob (a file or a symlink), tree, or commit (a submodule)
-};
-
 /**
  * @internal Exported for tests.
  *
- * Returns the parents which are files or symlinks in the base tree.
- * entriesByDir maps a directory ("" for the root) to its entries in the base
- * tree, or null if it doesn't exist in the base tree.
+ * Returns the parents which are files or symlinks (Blob) in the base tree.
+ * typenames maps a parent to the GraphQL typename of the object at the path
+ * in the base tree (Blob, Tree, or Commit for a submodule), or null if the
+ * path doesn't exist.
  * It throws an error if a parent is a submodule, because a path under a
  * submodule can't be added.
  */
 export const pickReplacedParents = (
-  parents: string[],
-  entriesByDir: Map<string, BaseTreeEntry[] | null>,
+  typenames: Map<string, string | null>,
 ): string[] => {
   const replaced: string[] = [];
-  for (const parent of parents) {
-    const { dir, name } = splitPath(parent);
-    const entry = entriesByDir.get(dir)?.find((e) => e.name === name);
-    if (entry?.type === "blob") {
+  for (const [parent, typename] of typenames) {
+    if (typename === "Blob") {
       replaced.push(parent);
-    } else if (entry?.type === "commit") {
+    } else if (typename === "Commit") {
       throw new Error(
         `${parent} is a submodule in the base tree, so paths under it can't be added`,
       );
@@ -410,17 +429,8 @@ export const pickReplacedParents = (
   return replaced;
 };
 
-// splitPath("a/b/c") returns { dir: "a/b", name: "c" }, and splitPath("a")
-// returns { dir: "", name: "a" }.
-const splitPath = (p: string): { dir: string; name: string } => {
-  const i = p.lastIndexOf("/");
-  return i === -1
-    ? { dir: "", name: p }
-    : { dir: p.slice(0, i), name: p.slice(i + 1) };
-};
-
-// The number of directories queried by one GraphQL request
-const treeQueryChunkSize = 50;
+// The number of paths queried by one GraphQL request
+const treeQueryChunkSize = 100;
 
 /**
  * Returns the parent directories of added paths which are files or symlinks
@@ -438,35 +448,36 @@ const findReplacedParents = async (
   tree: TreeEntry[],
 ): Promise<string[]> => {
   const parents = listParentDirs(tree);
-  if (parents.length === 0) {
-    return [];
-  }
-  const dirs = [...new Set(parents.map((p) => splitPath(p).dir))];
-  const entriesByDir = new Map<string, BaseTreeEntry[] | null>();
-  for (let i = 0; i < dirs.length; i += treeQueryChunkSize) {
-    const chunk = dirs.slice(i, i + treeQueryChunkSize);
-    const fields = chunk.map((dir, j) =>
-      dir === ""
-        ? `d${j}: object(oid: $tree) { ... on Tree { entries { name type } } }`
-        : `d${j}: object(expression: ${
-          JSON.stringify(`${baseTree}:${dir}`)
-        }) { ... on Tree { entries { name type } } }`
-    );
+  const typenames = new Map<string, string | null>();
+  for (let i = 0; i < parents.length; i += treeQueryChunkSize) {
+    const chunk = parents.slice(i, i + treeQueryChunkSize);
+    const variables: Record<string, string> = {
+      owner: opts.owner,
+      repo: opts.repo,
+    };
+    chunk.forEach((parent, j) => {
+      variables[`p${j}`] = `${baseTree}:${parent}`;
+    });
     const resp = await octokit.graphql<{
-      repository: Record<string, { entries: BaseTreeEntry[] } | null>;
+      repository: Record<string, { __typename: string } | null>;
     }>(
-      `query($owner: String!, $repo: String!, $tree: GitObjectID!) {
+      `query($owner: String!, $repo: String!, ${
+        chunk.map((_, j) => `$p${j}: String!`).join(", ")
+      }) {
   repository(owner: $owner, name: $repo) {
-    ${fields.join("\n    ")}
+    ${
+        chunk.map((_, j) => `p${j}: object(expression: $p${j}) { __typename }`)
+          .join("\n    ")
+      }
   }
 }`,
-      { owner: opts.owner, repo: opts.repo, tree: baseTree },
+      variables,
     );
-    chunk.forEach((dir, j) => {
-      entriesByDir.set(dir, resp.repository[`d${j}`]?.entries ?? null);
+    chunk.forEach((parent, j) => {
+      typenames.set(parent, resp.repository[`p${j}`]?.__typename ?? null);
     });
   }
-  return pickReplacedParents(parents, entriesByDir);
+  return pickReplacedParents(typenames);
 };
 
 // parentDirs("a/b/c") returns ["a", "a/b"].

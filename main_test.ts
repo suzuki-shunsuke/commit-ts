@@ -1,5 +1,8 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { Buffer } from "node:buffer";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import {
   createCommit,
   createSymlinkTreeEntry,
@@ -10,6 +13,8 @@ import {
   removeDeletionsUnderSymlinks,
   replaceParents,
   tryInlineUtf8,
+  validateCommitSHA,
+  validateFilePath,
   validateOptions,
   validateTree,
 } from "./main.ts";
@@ -562,3 +567,334 @@ Deno.test("createCommit: the original error is thrown if the query fails", async
     "GitRPC::BadObjectState",
   );
 });
+
+const sha1 = "1111111111111111111111111111111111111111";
+
+// withTmpDir runs fn in a new temporary directory and removes it afterwards.
+const withTmpDir = (fn: (dir: string) => Promise<void>) => async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "commit-ts-test-"));
+  try {
+    await fn(dir);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+Deno.test("validateCommitSHA", () => {
+  assertEquals(validateCommitSHA(sha1, "g"), sha1);
+  assertEquals(validateCommitSHA("a".repeat(64), "g"), "a".repeat(64));
+  for (const v of ["", "main", "A".repeat(40), "secret\nvalue"]) {
+    assertThrows(
+      () => validateCommitSHA(v, "g"),
+      Error,
+      "HEAD of a submodule isn't a commit SHA: g",
+    );
+  }
+});
+
+Deno.test(
+  "validateFilePath: a path outside rootDir throws",
+  withTmpDir(async (dir) => {
+    for (const p of ["../x", "a/../../x", "/etc/passwd", path.join(dir, "a")]) {
+      await assertRejects(
+        () => validateFilePath(dir, p),
+        Error,
+        "file must be in the root directory",
+      );
+    }
+  }),
+);
+
+Deno.test(
+  "validateFilePath: a non-normalized path or a path in .git throws",
+  withTmpDir(async (dir) => {
+    for (const p of ["./a", "a/../b", "a/", "a//b"]) {
+      await assertRejects(
+        () => validateFilePath(dir, p),
+        Error,
+        "file path must be normalized",
+      );
+    }
+    for (const p of [".git/config", "sub/.GIT/config"]) {
+      await assertRejects(
+        () => validateFilePath(dir, p),
+        Error,
+        "file must not be in a .git directory",
+      );
+    }
+  }),
+);
+
+Deno.test(
+  "validateFilePath: a symlinked parent directory",
+  withTmpDir(async (dir) => {
+    fs.mkdirSync(path.join(dir, "real"));
+    fs.symlinkSync("real", path.join(dir, "link"));
+    assertEquals(await validateFilePath(dir, "link/a.txt"), {
+      fullPath: path.join(dir, "link", "a.txt"),
+      underSymlink: true,
+    });
+    assertEquals(await validateFilePath(dir, "real/a.txt"), {
+      fullPath: path.join(dir, "real", "a.txt"),
+      underSymlink: false,
+    });
+    assertEquals(
+      (await validateFilePath(dir, "missing/a.txt")).underSymlink,
+      false,
+    );
+  }),
+);
+
+Deno.test(
+  "createCommit: a file under a symlinked directory",
+  withTmpDir(async (dir) => {
+    // A directory "dir" was replaced with a symlink to "real"
+    fs.mkdirSync(path.join(dir, "real"));
+    fs.writeFileSync(path.join(dir, "real", "a"), "SECRET_VALUE");
+    fs.symlinkSync("real", path.join(dir, "dir"));
+    const { octokit, calls } = fakeOctokit();
+    await createCommit(octokit, {
+      ...baseOptions,
+      rootDir: dir,
+      files: ["dir", "dir/a"],
+      deleteIfNotExist: true,
+      logger: { info: () => {} },
+    });
+    // The deletion of dir/a is removed by removeDeletionsUnderSymlinks
+    assertEquals(calls.tree, [
+      { path: "dir", content: "real", mode: "120000", type: "blob" },
+    ]);
+    await assertRejects(
+      () =>
+        createCommit(octokit, {
+          ...baseOptions,
+          rootDir: dir,
+          files: ["dir/a"],
+          logger: { info: () => {} },
+        }),
+      Error,
+      "a parent directory of a file must not be a symlink",
+    );
+  }),
+);
+
+Deno.test("validateFilePath: rootDir is the filesystem root", async () => {
+  assertEquals(
+    (await validateFilePath("/", "nonexistent-dir/a")).fullPath,
+    "/nonexistent-dir/a",
+  );
+});
+
+Deno.test(
+  "createCommit: a symlink in files is committed as a symlink",
+  withTmpDir(async (dir) => {
+    fs.writeFileSync(path.join(dir, "shared.txt"), "hello\n");
+    fs.symlinkSync("shared.txt", path.join(dir, "link"));
+    fs.symlinkSync("not-found", path.join(dir, "dangling"));
+    const { octokit, calls } = fakeOctokit();
+    await createCommit(octokit, {
+      ...baseOptions,
+      rootDir: dir,
+      files: ["link", "dangling"],
+      deleteIfNotExist: true,
+      logger: { info: () => {} },
+    });
+    assertEquals(calls.tree, [
+      { path: "link", content: "shared.txt", mode: "120000", type: "blob" },
+      { path: "dangling", content: "not-found", mode: "120000", type: "blob" },
+    ]);
+  }),
+);
+
+Deno.test(
+  "createCommit: a path under a file is deleted (ENOTDIR)",
+  withTmpDir(async (dir) => {
+    fs.writeFileSync(path.join(dir, "a"), "");
+    const { octokit, calls } = fakeOctokit();
+    await createCommit(octokit, {
+      ...baseOptions,
+      rootDir: dir,
+      files: ["a/x"],
+      deleteIfNotExist: true,
+      logger: { info: () => {} },
+    });
+    assertEquals(calls.tree, [{ path: "a/x", sha: null, mode: "100644" }]);
+  }),
+);
+
+Deno.test("createCommit: an invalid file path throws before API calls", async () => {
+  const { octokit } = fakeOctokit();
+  (octokit as unknown as { graphql: unknown }).graphql = () => {
+    throw new Error("the API must not be called");
+  };
+  await assertRejects(
+    () =>
+      createCommit(octokit, {
+        ...baseOptions,
+        files: ["a.txt", "./b.txt"],
+        logger: { info: () => {} },
+      }),
+    Error,
+    "file path must be normalized",
+  );
+});
+
+Deno.test(
+  "createCommit: a file outside rootDir throws",
+  withTmpDir(async (dir) => {
+    const { octokit } = fakeOctokit();
+    await assertRejects(
+      () =>
+        createCommit(octokit, {
+          ...baseOptions,
+          rootDir: path.join(dir, "root"),
+          files: ["../secret.txt"],
+          deleteIfNotExist: true,
+          logger: { info: () => {} },
+        }),
+      Error,
+      "file must be in the root directory",
+    );
+  }),
+);
+
+// setupSubmodule creates a directory "sub" with a .git file pointing to
+// gitdir, and writes HEAD in gitdir.
+const setupSubmodule = (dir: string, gitdir: string, head: string) => {
+  fs.mkdirSync(path.join(dir, "sub"));
+  fs.writeFileSync(path.join(dir, "sub", ".git"), `gitdir: ${gitdir}\n`);
+  const gitDirPath = path.resolve(path.join(dir, "sub"), gitdir);
+  fs.mkdirSync(gitDirPath, { recursive: true });
+  fs.writeFileSync(path.join(gitDirPath, "HEAD"), head);
+};
+
+Deno.test(
+  "createCommit: a submodule with a valid HEAD",
+  withTmpDir(async (dir) => {
+    setupSubmodule(dir, "../.git/modules/sub", `${sha1}\n`);
+    const { octokit, calls } = fakeOctokit();
+    await createCommit(octokit, {
+      ...baseOptions,
+      rootDir: dir,
+      files: ["sub"],
+      logger: { info: () => {} },
+    });
+    assertEquals(calls.tree, [
+      { path: "sub", mode: "160000", type: "commit", sha: sha1 },
+    ]);
+  }),
+);
+
+Deno.test(
+  "createCommit: a submodule whose HEAD isn't a SHA throws without the content",
+  withTmpDir(async (dir) => {
+    setupSubmodule(dir, "../.git/modules/sub", "SECRET_VALUE\n");
+    const { octokit } = fakeOctokit();
+    const error = await assertRejects(
+      () =>
+        createCommit(octokit, {
+          ...baseOptions,
+          rootDir: dir,
+          files: ["sub"],
+          logger: { info: () => {} },
+        }),
+      Error,
+      "HEAD of a submodule isn't a commit SHA",
+    );
+    assertEquals(error.message.includes("SECRET_VALUE"), false);
+  }),
+);
+
+Deno.test(
+  "createCommit: a submodule whose gitdir isn't in .git throws",
+  withTmpDir(async (dir) => {
+    setupSubmodule(dir, "../elsewhere", `${sha1}\n`);
+    const { octokit } = fakeOctokit();
+    await assertRejects(
+      () =>
+        createCommit(octokit, {
+          ...baseOptions,
+          rootDir: dir,
+          files: ["sub"],
+          logger: { info: () => {} },
+        }),
+      Error,
+      "gitdir of a submodule must be in a .git directory",
+    );
+  }),
+);
+
+Deno.test(
+  "createCommit: a submodule whose absolute gitdir escapes .git throws",
+  withTmpDir(async (dir) => {
+    fs.mkdirSync(path.join(dir, "elsewhere"));
+    fs.writeFileSync(path.join(dir, "elsewhere", "HEAD"), `${sha1}\n`);
+    fs.mkdirSync(path.join(dir, "sub"));
+    fs.writeFileSync(
+      path.join(dir, "sub", ".git"),
+      `gitdir: ${path.join(dir, ".git")}/../elsewhere\n`,
+    );
+    const { octokit } = fakeOctokit();
+    await assertRejects(
+      () =>
+        createCommit(octokit, {
+          ...baseOptions,
+          rootDir: dir,
+          files: ["sub"],
+          logger: { info: () => {} },
+        }),
+      Error,
+      "gitdir of a submodule must be in a .git directory",
+    );
+  }),
+);
+
+Deno.test(
+  "createCommit: a symlinked .git isn't followed",
+  withTmpDir(async (dir) => {
+    setupSubmodule(dir, "../.git/modules/sub", `${sha1}\n`);
+    fs.renameSync(path.join(dir, "sub", ".git"), path.join(dir, "dotgit"));
+    fs.symlinkSync("../dotgit", path.join(dir, "sub", ".git"));
+    const { octokit, calls } = fakeOctokit();
+    await createCommit(octokit, {
+      ...baseOptions,
+      rootDir: dir,
+      files: ["sub"],
+      logger: { info: () => {} },
+    });
+    // sub isn't a submodule, so it's committed as a directory
+    const entries = calls.tree as Array<Record<string, unknown>>;
+    assertEquals(
+      entries.map((e) => [e.path, e.mode]),
+      [["sub", "040000"]],
+    );
+  }),
+);
+
+Deno.test(
+  "createCommit: a submodule whose ref escapes gitdir throws",
+  withTmpDir(async (dir) => {
+    setupSubmodule(
+      dir,
+      "../.git/modules/sub",
+      "ref: ../../../../../etc/passwd\n",
+    );
+    const { octokit } = fakeOctokit();
+    for (
+      const head of ["ref: ../../../../../etc/passwd\n", "ref: refs/..\\x\n"]
+    ) {
+      fs.writeFileSync(path.join(dir, ".git", "modules", "sub", "HEAD"), head);
+      await assertRejects(
+        () =>
+          createCommit(octokit, {
+            ...baseOptions,
+            rootDir: dir,
+            files: ["sub"],
+            logger: { info: () => {} },
+          }),
+        Error,
+        "HEAD of a submodule has an invalid ref",
+      );
+    }
+  }),
+);

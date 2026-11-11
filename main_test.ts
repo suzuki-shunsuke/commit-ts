@@ -8,6 +8,7 @@ import {
   type Options,
   pickReplacedParents,
   removeDeletionsUnderSymlinks,
+  replaceParents,
   tryInlineUtf8,
   validateOptions,
   validateTree,
@@ -301,6 +302,22 @@ Deno.test("pickReplacedParents: files and symlinks in the base tree", () => {
   );
 });
 
+Deno.test("replaceParents: deletions first, without deletions under them", () => {
+  assertEquals(
+    replaceParents(
+      [
+        deleted("f/old"),
+        deleted("f/g/old"),
+        deleted("f-2/old"),
+        symlink("f/new"),
+        file("x.txt"),
+      ],
+      ["f"],
+    ),
+    [deleted("f"), deleted("f-2/old"), symlink("f/new"), file("x.txt")],
+  );
+});
+
 // fakeOctokit records the tree passed to createTree.
 // baseTypes maps a path in the base tree to the GraphQL typename of the
 // object (Blob, Tree, or Commit). Like the real API, createTree fails with
@@ -504,4 +521,15 @@ Deno.test("createCommit: the base tree isn't queried with noParent", async () =>
   });
   assertEquals(calls.treeQueries, 0);
   assertEquals(calls.tree, [symlink("f/a", "x")]);
+});
+
+Deno.test("createCommit: deletions under a replaced parent are removed", async () => {
+  const { octokit, calls } = fakeOctokit({ f: "Blob" });
+  await createCommit(octokit, {
+    ...baseOptions,
+    deletedFiles: ["f/old"],
+    symlinks: [{ path: "f/new", target: "x" }],
+    logger: { info: () => {} },
+  });
+  assertEquals(calls.tree, [deleted("f"), symlink("f/new", "x")]);
 });

@@ -233,7 +233,7 @@ const getTreeSHA = async (
     return await createTree(
       octokit,
       opts,
-      [...replaced.map(createDeletedTreeFile), ...tree],
+      replaceParents(tree, replaced),
       baseTree,
       logger,
     );
@@ -259,6 +259,28 @@ const createTree = async (
     base_tree: baseTree,
   });
   return treeResp.data.sha;
+};
+
+/**
+ * @internal Exported for tests.
+ *
+ * Returns the tree with deletions of the replaced parents put first.
+ * Deletions under the replaced parents are removed: they don't exist in the
+ * base tree because the parents are files or symlinks there, and the Create a
+ * tree API fails with GitRPC::BadObjectState when deleting a missing path.
+ */
+export const replaceParents = (
+  tree: TreeEntry[],
+  replaced: string[],
+): TreeEntry[] => {
+  const replacedSet = new Set(replaced);
+  return [
+    ...replaced.map(createDeletedTreeFile),
+    ...tree.filter((e) =>
+      e.sha !== null ||
+      !parentDirs(e.path).some((parent) => replacedSet.has(parent))
+    ),
+  ];
 };
 
 const isBadObjectState = (error: unknown): boolean =>

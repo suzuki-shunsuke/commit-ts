@@ -3,7 +3,8 @@
   "version": "0.1.18",
   "exports": "./main.ts",
   "tasks": {
-    "dev": "deno run --watch main.ts"
+    "dev": "deno run --watch main.ts",
+    "test": "deno test"
   },
   "publish": {
     "include": ["LICENSE", "README.md", "main.ts"]

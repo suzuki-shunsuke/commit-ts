@@ -1,10 +1,12 @@
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { Buffer } from "node:buffer";
 import {
   createCommit,
   createSymlinkTreeEntry,
   type GitHub,
+  listParentDirs,
   type Options,
+  pickReplacedParents,
   removeDeletionsUnderSymlinks,
   tryInlineUtf8,
   validateOptions,
@@ -268,16 +270,74 @@ Deno.test("createCommit: replace a directory with a symlink", async () => {
   assertEquals(calls.tree, [symlink("dir", "other")]);
 });
 
+Deno.test("listParentDirs: parents of added paths except deleted paths", () => {
+  assertEquals(
+    listParentDirs([
+      symlink("a/b/link"),
+      file("c/d.txt"),
+      deleted("e/f.txt"),
+      deleted("c"),
+      submodule("g/sub"),
+      file("top.txt"),
+    ]).sort(),
+    ["a", "a/b", "g"],
+  );
+});
+
+Deno.test("pickReplacedParents: files and symlinks in the base tree", () => {
+  const entriesByDir = new Map([
+    ["", [
+      { name: "f", type: "blob" },
+      { name: "dir", type: "tree" },
+      { name: "sub", type: "commit" },
+    ]],
+    ["dir", [{ name: "link", type: "blob" }, { name: "x", type: "tree" }]],
+    ["new", null],
+  ]);
+  assertEquals(
+    pickReplacedParents(
+      ["f", "dir", "dir/link", "dir/x", "new/y", "g"],
+      entriesByDir,
+    ),
+    ["f", "dir/link"],
+  );
+  assertThrows(
+    () => pickReplacedParents(["sub"], entriesByDir),
+    Error,
+    "sub is a submodule in the base tree",
+  );
+});
+
 // fakeOctokit records the tree passed to createTree.
-const fakeOctokit = () => {
-  const calls: { tree?: unknown[] } = {};
+// baseTreeEntries maps a directory ("" for the root) in the base tree to its
+// entries, which are returned for the queries of the base tree.
+const fakeOctokit = (
+  baseTreeEntries: Record<string, { name: string; type: string }[]> = {},
+) => {
+  const calls: { tree?: unknown[]; treeQueries: number } = { treeQueries: 0 };
   const octokit = {
-    graphql: () =>
-      Promise.resolve({
-        repository: {
-          ref: { target: { oid: "base-commit", tree: { oid: "base-tree" } } },
-        },
-      }),
+    graphql: (query: string) => {
+      if (query.includes("ref(qualifiedName")) {
+        return Promise.resolve({
+          repository: {
+            ref: {
+              target: { oid: "base-commit", tree: { oid: "base-tree" } },
+            },
+          },
+        });
+      }
+      calls.treeQueries++;
+      const repository: Record<string, unknown> = {};
+      for (
+        const m of query.matchAll(
+          /(d\d+): object\((?:oid: \$tree|expression: "base-tree:([^"]*)")\)/g,
+        )
+      ) {
+        const entries = baseTreeEntries[m[2] ?? ""];
+        repository[m[1]] = entries ? { entries } : null;
+      }
+      return Promise.resolve({ repository });
+    },
     rest: {
       git: {
         createTree: (params: { tree: unknown[] }) => {
@@ -328,4 +388,74 @@ Deno.test("createCommit: nothing to commit", async () => {
   const { octokit, calls } = fakeOctokit();
   assertEquals(await createCommit(octokit, baseOptions), undefined);
   assertEquals(calls.tree, undefined);
+});
+
+Deno.test("createCommit: delete a file in the base tree replaced with a directory", async () => {
+  const { octokit, calls } = fakeOctokit({
+    "": [{ name: "f", type: "blob" }, { name: "dir", type: "tree" }],
+    "dir": [{ name: "link", type: "blob" }],
+  });
+  await createCommit(octokit, {
+    ...baseOptions,
+    symlinks: [
+      { path: "f/a", target: "x" },
+      { path: "dir/link/b", target: "y" },
+      { path: "dir/c", target: "z" },
+    ],
+    logger: { info: () => {} },
+  });
+  assertEquals(calls.tree, [
+    symlink("f/a", "x"),
+    symlink("dir/link/b", "y"),
+    symlink("dir/c", "z"),
+    deleted("f"),
+    deleted("dir/link"),
+  ]);
+});
+
+Deno.test("createCommit: an already deleted parent isn't deleted twice", async () => {
+  const { octokit, calls } = fakeOctokit({ "": [{ name: "f", type: "blob" }] });
+  await createCommit(octokit, {
+    ...baseOptions,
+    deletedFiles: ["f"],
+    symlinks: [{ path: "f/a", target: "x" }],
+    logger: { info: () => {} },
+  });
+  assertEquals(calls.tree, [deleted("f"), symlink("f/a", "x")]);
+});
+
+Deno.test("createCommit: a path under a submodule in the base tree throws", async () => {
+  const { octokit } = fakeOctokit({ "": [{ name: "sub", type: "commit" }] });
+  await assertRejects(
+    () =>
+      createCommit(octokit, {
+        ...baseOptions,
+        symlinks: [{ path: "sub/a", target: "x" }],
+        logger: { info: () => {} },
+      }),
+    Error,
+    "sub is a submodule in the base tree",
+  );
+});
+
+Deno.test("createCommit: the base tree isn't queried without parents", async () => {
+  const { octokit, calls } = fakeOctokit();
+  await createCommit(octokit, {
+    ...baseOptions,
+    symlinks: [{ path: "link", target: "x" }],
+    logger: { info: () => {} },
+  });
+  assertEquals(calls.treeQueries, 0);
+});
+
+Deno.test("createCommit: the base tree isn't queried with noParent", async () => {
+  const { octokit, calls } = fakeOctokit({ "": [{ name: "f", type: "blob" }] });
+  await createCommit(octokit, {
+    ...baseOptions,
+    noParent: true,
+    symlinks: [{ path: "f/a", target: "x" }],
+    logger: { info: () => {} },
+  });
+  assertEquals(calls.treeQueries, 0);
+  assertEquals(calls.tree, [symlink("f/a", "x")]);
 });

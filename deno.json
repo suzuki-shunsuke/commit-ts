@@ -7,11 +7,7 @@
     "test": "deno test --allow-read --allow-write --allow-env"
   },
   "publish": {
-    "include": [
-      "LICENSE",
-      "README.md",
-      "main.ts"
-    ]
+    "include": ["LICENSE", "README.md", "main.ts"]
   },
   "imports": {
     "@actions/github": "npm:@actions/github@^9.0.0",

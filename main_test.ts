@@ -361,6 +361,13 @@ const fakeOctokit = (baseTypes: Record<string, string> = {}) => {
           );
           for (const entry of params.tree) {
             if (entry.sha === null) {
+              // Deleting a path under a Blob, which doesn't exist, fails
+              const elems = entry.path.split("/");
+              for (let i = 1; i < elems.length; i++) {
+                if (baseTypes[elems.slice(0, i).join("/")] === "Blob") {
+                  return Promise.reject(new Error("GitRPC::BadObjectState"));
+                }
+              }
               continue;
             }
             const elems = entry.path.split("/");
@@ -532,4 +539,26 @@ Deno.test("createCommit: deletions under a replaced parent are removed", async (
     logger: { info: () => {} },
   });
   assertEquals(calls.tree, [deleted("f"), symlink("f/new", "x")]);
+});
+
+Deno.test("createCommit: the original error is thrown if the query fails", async () => {
+  const { octokit } = fakeOctokit({ f: "Blob" });
+  (octokit as unknown as { graphql: unknown }).graphql = (query: string) =>
+    query.includes("ref(qualifiedName")
+      ? Promise.resolve({
+        repository: {
+          ref: { target: { oid: "base-commit", tree: { oid: "base-tree" } } },
+        },
+      })
+      : Promise.reject(new Error("rate limit"));
+  await assertRejects(
+    () =>
+      createCommit(octokit, {
+        ...baseOptions,
+        symlinks: [{ path: "f/a", target: "x" }],
+        logger: { info: () => {} },
+      }),
+    Error,
+    "GitRPC::BadObjectState",
+  );
 });

@@ -221,7 +221,21 @@ const getTreeSHA = async (
     // A path may be added under a file or a symlink in the base tree,
     // i.e. a file or a symlink replaced with a directory.
     // It's checked only on this error to avoid extra API calls.
-    const replaced = await findReplacedParents(octokit, opts, baseTree, tree);
+    let replaced: string[];
+    try {
+      replaced = await findReplacedParents(octokit, opts, baseTree, tree);
+    } catch (findError: unknown) {
+      if (isError(findError) && findError.message.includes("submodule")) {
+        throw findError;
+      }
+      // Don't hide the original error
+      logger.info(
+        `failed to check if files in the base tree are replaced with directories: ${
+          isError(findError) ? findError.message : findError
+        }`,
+      );
+      throw error;
+    }
     if (replaced.length === 0) {
       throw error;
     }
@@ -273,13 +287,9 @@ export const replaceParents = (
   tree: TreeEntry[],
   replaced: string[],
 ): TreeEntry[] => {
-  const replacedSet = new Set(replaced);
   return [
     ...replaced.map(createDeletedTreeFile),
-    ...tree.filter((e) =>
-      e.sha !== null ||
-      !parentDirs(e.path).some((parent) => replacedSet.has(parent))
-    ),
+    ...removeDeletionsUnder(tree, new Set(replaced)),
   ];
 };
 
@@ -386,13 +396,20 @@ export const validateTree = (tree: TreeEntry[]): void => {
 export const removeDeletionsUnderSymlinks = (
   tree: TreeEntry[],
 ): TreeEntry[] => {
-  const symlinkPaths = getSymlinkPaths(tree);
-  if (symlinkPaths.size === 0) {
+  return removeDeletionsUnder(tree, getSymlinkPaths(tree));
+};
+
+// removeDeletionsUnder removes deletions of paths under the given paths.
+const removeDeletionsUnder = (
+  tree: TreeEntry[],
+  paths: Set<string>,
+): TreeEntry[] => {
+  if (paths.size === 0) {
     return tree;
   }
   return tree.filter((e) =>
     e.sha !== null ||
-    !parentDirs(e.path).some((parent) => symlinkPaths.has(parent))
+    !parentDirs(e.path).some((parent) => paths.has(parent))
   );
 };
 

@@ -722,6 +722,23 @@ Deno.test(
   }),
 );
 
+Deno.test("createCommit: an invalid file path throws before API calls", async () => {
+  const { octokit } = fakeOctokit();
+  (octokit as unknown as { graphql: unknown }).graphql = () => {
+    throw new Error("the API must not be called");
+  };
+  await assertRejects(
+    () =>
+      createCommit(octokit, {
+        ...baseOptions,
+        files: ["a.txt", "./b.txt"],
+        logger: { info: () => {} },
+      }),
+    Error,
+    "file path must be normalized",
+  );
+});
+
 Deno.test(
   "createCommit: a file outside rootDir throws",
   withTmpDir(async (dir) => {

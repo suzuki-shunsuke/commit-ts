@@ -309,6 +309,11 @@ export const validateOptions = (opts: Options): void => {
       throw new Error(`${key} is required`);
     }
   }
+  // Check paths of files before any API call or file access.
+  // Whether a parent directory is a symlink is checked when a file is read.
+  for (const file of opts.files || []) {
+    parseFilePath(opts.rootDir || "", file);
+  }
   validateSymlinks(opts);
 };
 
@@ -567,6 +572,9 @@ const createTreeFile = async (
         `a parent directory of a file must not be a symlink: ${filePath}`,
       );
     }
+    opts.logger?.info(
+      `a parent directory is a symlink, so the file is deleted: ${filePath}`,
+    );
     return { path: filePath, sha: null, mode: "100644" };
   }
   const file = await getFileContentAndMode(
@@ -943,6 +951,32 @@ export const validateFilePath = async (
   rootDir: string,
   filePath: string,
 ): Promise<{ fullPath: string; underSymlink: boolean }> => {
+  const { base, resolved, components } = parseFilePath(rootDir, filePath);
+  for (let i = 1; i < components.length; i++) {
+    let stats: Stats;
+    try {
+      stats = await lstat(path.join(base, ...components.slice(0, i)));
+    } catch (error: unknown) {
+      if (isNotFound(error)) {
+        return { fullPath: resolved, underSymlink: false };
+      }
+      throw error;
+    }
+    if (stats.isSymbolicLink()) {
+      return { fullPath: resolved, underSymlink: true };
+    }
+  }
+  return { fullPath: resolved, underSymlink: false };
+};
+
+/**
+ * Validates that a file path is a normalized relative path in rootDir and
+ * isn't in a .git directory, without accessing the file system.
+ */
+const parseFilePath = (
+  rootDir: string,
+  filePath: string,
+): { base: string; resolved: string; components: string[] } => {
   const base = path.resolve(rootDir);
   const resolved = path.resolve(base, filePath);
   const relative = path.relative(base, resolved);
@@ -960,21 +994,7 @@ export const validateFilePath = async (
   if (components.some((c) => c.toLowerCase() === ".git")) {
     throw new Error(`file must not be in a .git directory: ${filePath}`);
   }
-  for (let i = 1; i < components.length; i++) {
-    let stats: Stats;
-    try {
-      stats = await lstat(path.join(base, ...components.slice(0, i)));
-    } catch (error: unknown) {
-      if (isNotFound(error)) {
-        return { fullPath: resolved, underSymlink: false };
-      }
-      throw error;
-    }
-    if (stats.isSymbolicLink()) {
-      return { fullPath: resolved, underSymlink: true };
-    }
-  }
-  return { fullPath: resolved, underSymlink: false };
+  return { base, resolved, components };
 };
 
 const getFileMode = (mode: number): FileMode => {

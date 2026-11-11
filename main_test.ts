@@ -595,7 +595,7 @@ Deno.test("validateCommitSHA", () => {
 Deno.test(
   "validateFilePath: a path outside rootDir throws",
   withTmpDir(async (dir) => {
-    for (const p of ["../x", "a/../../x", "/etc/passwd"]) {
+    for (const p of ["../x", "a/../../x", "/etc/passwd", path.join(dir, "a")]) {
       await assertRejects(
         () => validateFilePath(dir, p),
         Error,
@@ -615,10 +615,20 @@ Deno.test(
       Error,
       "a parent directory of a file must not be a symlink",
     );
-    await validateFilePath(dir, "real/a.txt");
+    assertEquals(
+      await validateFilePath(dir, "real/a.txt"),
+      path.join(dir, "real", "a.txt"),
+    );
     await validateFilePath(dir, "missing/a.txt");
   }),
 );
+
+Deno.test("validateFilePath: rootDir is the filesystem root", async () => {
+  assertEquals(
+    await validateFilePath("/", "nonexistent-dir/a"),
+    "/nonexistent-dir/a",
+  );
+});
 
 Deno.test(
   "createCommit: a symlink in files is committed as a symlink",
@@ -743,12 +753,14 @@ Deno.test(
 );
 
 Deno.test(
-  "createCommit: a submodule whose ref escapes gitdir throws",
+  "createCommit: a submodule whose absolute gitdir escapes .git throws",
   withTmpDir(async (dir) => {
-    setupSubmodule(
-      dir,
-      "../.git/modules/sub",
-      "ref: ../../../../../etc/passwd\n",
+    fs.mkdirSync(path.join(dir, "elsewhere"));
+    fs.writeFileSync(path.join(dir, "elsewhere", "HEAD"), `${sha1}\n`);
+    fs.mkdirSync(path.join(dir, "sub"));
+    fs.writeFileSync(
+      path.join(dir, "sub", ".git"),
+      `gitdir: ${path.join(dir, ".git")}/../elsewhere\n`,
     );
     const { octokit } = fakeOctokit();
     await assertRejects(
@@ -760,7 +772,35 @@ Deno.test(
           logger: { info: () => {} },
         }),
       Error,
-      "HEAD of a submodule has an invalid ref",
+      "gitdir of a submodule must be in a .git directory",
     );
+  }),
+);
+
+Deno.test(
+  "createCommit: a submodule whose ref escapes gitdir throws",
+  withTmpDir(async (dir) => {
+    setupSubmodule(
+      dir,
+      "../.git/modules/sub",
+      "ref: ../../../../../etc/passwd\n",
+    );
+    const { octokit } = fakeOctokit();
+    for (
+      const head of ["ref: ../../../../../etc/passwd\n", "ref: refs/..\\x\n"]
+    ) {
+      fs.writeFileSync(path.join(dir, ".git", "modules", "sub", "HEAD"), head);
+      await assertRejects(
+        () =>
+          createCommit(octokit, {
+            ...baseOptions,
+            rootDir: dir,
+            files: ["sub"],
+            logger: { info: () => {} },
+          }),
+        Error,
+        "HEAD of a submodule has an invalid ref",
+      );
+    }
   }),
 );

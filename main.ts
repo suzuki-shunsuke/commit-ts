@@ -553,11 +553,11 @@ const createTreeFile = async (
   opts: Options,
   filePath: string,
 ): Promise<TreeEntry> => {
-  await validateFilePath(opts.rootDir || "", filePath);
+  const fullPath = await validateFilePath(opts.rootDir || "", filePath);
   const file = await getFileContentAndMode(
     octokit,
     opts,
-    path.join(opts.rootDir || "", filePath),
+    fullPath,
     opts.deleteIfNotExist || false,
   );
   if (file.sha === null) {
@@ -763,7 +763,11 @@ const resolveGitHEAD = async (gitDir: string): Promise<string> => {
   // Symbolic ref: resolve the ref file
   const ref = content.slice("ref: ".length);
   // A ref is a normalized path under refs/, so a file outside gitDir isn't read
-  if (!ref.startsWith("refs/") || path.posix.normalize(ref) !== ref) {
+  // A backslash is a separator on Windows, and Git doesn't allow it in a ref.
+  if (
+    !ref.startsWith("refs/") || ref.includes("\\") ||
+    path.posix.normalize(ref) !== ref
+  ) {
     throw new Error(`HEAD of a submodule has an invalid ref: ${gitDir}`);
   }
   const refPath = path.join(gitDir, ref);
@@ -797,9 +801,8 @@ const getSubmoduleCommitSHA = async (
   if (!match) {
     return undefined;
   }
-  const gitDir = path.isAbsolute(match[1])
-    ? match[1]
-    : path.resolve(dirPath, match[1]);
+  // path.resolve also normalizes an absolute path, e.g. /.git/../etc
+  const gitDir = path.resolve(dirPath, match[1]);
   // A git directory of a submodule or a worktree is in a .git directory, e.g.
   // .git/modules/<name>. Don't read files elsewhere.
   if (!gitDir.split(path.sep).includes(".git")) {
@@ -911,26 +914,31 @@ const isNotFound = (error: unknown): boolean => {
 /**
  * @internal Exported for tests.
  *
- * Validates that a file path is in rootDir and that no parent directory of it
- * is a symlink, so that a file outside rootDir isn't read.
+ * Validates that a file path is a relative path in rootDir and that no parent
+ * directory of it is a symlink, so that a file outside rootDir isn't read.
+ * It returns the absolute path of the file, which must be the path to read.
  */
 export const validateFilePath = async (
   rootDir: string,
   filePath: string,
-): Promise<void> => {
+): Promise<string> => {
   const base = path.resolve(rootDir);
   const resolved = path.resolve(base, filePath);
-  if (!resolved.startsWith(base + path.sep)) {
+  const relative = path.relative(base, resolved);
+  if (
+    path.isAbsolute(filePath) || relative === "" || relative === ".." ||
+    relative.startsWith(".." + path.sep) || path.isAbsolute(relative)
+  ) {
     throw new Error(`file must be in the root directory: ${filePath}`);
   }
-  const components = path.relative(base, resolved).split(path.sep);
+  const components = relative.split(path.sep);
   for (let i = 1; i < components.length; i++) {
     let stats: Stats;
     try {
       stats = await lstat(path.join(base, ...components.slice(0, i)));
     } catch (error: unknown) {
       if (isNotFound(error)) {
-        return;
+        return resolved;
       }
       throw error;
     }
@@ -940,6 +948,7 @@ export const validateFilePath = async (
       );
     }
   }
+  return resolved;
 };
 
 const getFileMode = (mode: number): FileMode => {

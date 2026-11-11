@@ -606,26 +606,81 @@ Deno.test(
 );
 
 Deno.test(
-  "validateFilePath: a symlinked parent directory throws",
+  "validateFilePath: a non-normalized path or a path in .git throws",
+  withTmpDir(async (dir) => {
+    for (const p of ["./a", "a/../b", "a/", "a//b"]) {
+      await assertRejects(
+        () => validateFilePath(dir, p),
+        Error,
+        "file path must be normalized",
+      );
+    }
+    for (const p of [".git/config", "sub/.GIT/config"]) {
+      await assertRejects(
+        () => validateFilePath(dir, p),
+        Error,
+        "file must not be in a .git directory",
+      );
+    }
+  }),
+);
+
+Deno.test(
+  "validateFilePath: a symlinked parent directory",
   withTmpDir(async (dir) => {
     fs.mkdirSync(path.join(dir, "real"));
     fs.symlinkSync("real", path.join(dir, "link"));
+    assertEquals(await validateFilePath(dir, "link/a.txt"), {
+      fullPath: path.join(dir, "link", "a.txt"),
+      underSymlink: true,
+    });
+    assertEquals(await validateFilePath(dir, "real/a.txt"), {
+      fullPath: path.join(dir, "real", "a.txt"),
+      underSymlink: false,
+    });
+    assertEquals(
+      (await validateFilePath(dir, "missing/a.txt")).underSymlink,
+      false,
+    );
+  }),
+);
+
+Deno.test(
+  "createCommit: a file under a symlinked directory",
+  withTmpDir(async (dir) => {
+    // A directory "dir" was replaced with a symlink to "real"
+    fs.mkdirSync(path.join(dir, "real"));
+    fs.writeFileSync(path.join(dir, "real", "a"), "SECRET_VALUE");
+    fs.symlinkSync("real", path.join(dir, "dir"));
+    const { octokit, calls } = fakeOctokit();
+    await createCommit(octokit, {
+      ...baseOptions,
+      rootDir: dir,
+      files: ["dir", "dir/a"],
+      deleteIfNotExist: true,
+      logger: { info: () => {} },
+    });
+    // The deletion of dir/a is removed by removeDeletionsUnderSymlinks
+    assertEquals(calls.tree, [
+      { path: "dir", content: "real", mode: "120000", type: "blob" },
+    ]);
     await assertRejects(
-      () => validateFilePath(dir, "link/a.txt"),
+      () =>
+        createCommit(octokit, {
+          ...baseOptions,
+          rootDir: dir,
+          files: ["dir/a"],
+          logger: { info: () => {} },
+        }),
       Error,
       "a parent directory of a file must not be a symlink",
     );
-    assertEquals(
-      await validateFilePath(dir, "real/a.txt"),
-      path.join(dir, "real", "a.txt"),
-    );
-    await validateFilePath(dir, "missing/a.txt");
   }),
 );
 
 Deno.test("validateFilePath: rootDir is the filesystem root", async () => {
   assertEquals(
-    await validateFilePath("/", "nonexistent-dir/a"),
+    (await validateFilePath("/", "nonexistent-dir/a")).fullPath,
     "/nonexistent-dir/a",
   );
 });
@@ -773,6 +828,28 @@ Deno.test(
         }),
       Error,
       "gitdir of a submodule must be in a .git directory",
+    );
+  }),
+);
+
+Deno.test(
+  "createCommit: a symlinked .git isn't followed",
+  withTmpDir(async (dir) => {
+    setupSubmodule(dir, "../.git/modules/sub", `${sha1}\n`);
+    fs.renameSync(path.join(dir, "sub", ".git"), path.join(dir, "dotgit"));
+    fs.symlinkSync("../dotgit", path.join(dir, "sub", ".git"));
+    const { octokit, calls } = fakeOctokit();
+    await createCommit(octokit, {
+      ...baseOptions,
+      rootDir: dir,
+      files: ["sub"],
+      logger: { info: () => {} },
+    });
+    // sub isn't a submodule, so it's committed as a directory
+    const entries = calls.tree as Array<Record<string, unknown>>;
+    assertEquals(
+      entries.map((e) => [e.path, e.mode]),
+      [["sub", "040000"]],
     );
   }),
 );

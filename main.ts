@@ -1,7 +1,7 @@
 import type * as github from "@actions/github";
 import type { Octokit } from "@octokit/rest";
 import { Buffer } from "node:buffer";
-import { lstat, readFile, readlink, stat } from "node:fs/promises";
+import { lstat, readFile, readlink } from "node:fs/promises";
 import path from "node:path";
 import type { Stats } from "node:fs";
 
@@ -553,7 +553,22 @@ const createTreeFile = async (
   opts: Options,
   filePath: string,
 ): Promise<TreeEntry> => {
-  const fullPath = await validateFilePath(opts.rootDir || "", filePath);
+  const { fullPath, underSymlink } = await validateFilePath(
+    opts.rootDir || "",
+    filePath,
+  );
+  if (underSymlink) {
+    // A file under a symlinked directory is deleted from Git's point of view,
+    // e.g. when a directory is replaced with a symlink.
+    // Its deletion is removed by removeDeletionsUnderSymlinks if the symlink
+    // is also committed. The file isn't read, because it's outside rootDir.
+    if (!opts.deleteIfNotExist) {
+      throw new Error(
+        `a parent directory of a file must not be a symlink: ${filePath}`,
+      );
+    }
+    return { path: filePath, sha: null, mode: "100644" };
+  }
   const file = await getFileContentAndMode(
     octokit,
     opts,
@@ -774,7 +789,10 @@ const resolveGitHEAD = async (gitDir: string): Promise<string> => {
   let sha: string;
   try {
     sha = (await readFile(refPath, "utf8")).trim();
-  } catch {
+  } catch (error: unknown) {
+    if (!isNotFound(error)) {
+      throw error;
+    }
     // ref file doesn't exist, try packed-refs
     return resolvePackedRef(gitDir, ref);
   }
@@ -786,9 +804,10 @@ const getSubmoduleCommitSHA = async (
 ): Promise<string | undefined> => {
   const dotGitPath = path.join(dirPath, ".git");
   try {
-    const stats = await stat(dotGitPath);
+    // lstat doesn't follow a symlink, so a file outside rootDir isn't read
+    const stats = await lstat(dotGitPath);
     if (!stats.isFile()) {
-      // .git is a directory (regular repo, not a submodule)
+      // .git is a directory (regular repo, not a submodule) or a symlink
       return undefined;
     }
   } catch {
@@ -914,14 +933,16 @@ const isNotFound = (error: unknown): boolean => {
 /**
  * @internal Exported for tests.
  *
- * Validates that a file path is a relative path in rootDir and that no parent
- * directory of it is a symlink, so that a file outside rootDir isn't read.
- * It returns the absolute path of the file, which must be the path to read.
+ * Validates that a file path is a normalized relative path in rootDir and
+ * isn't in a .git directory.
+ * It returns the absolute path of the file, which must be the path to read,
+ * and whether a parent directory of it is a symlink. Such a file must not be
+ * read, because it can be outside rootDir.
  */
 export const validateFilePath = async (
   rootDir: string,
   filePath: string,
-): Promise<string> => {
+): Promise<{ fullPath: string; underSymlink: boolean }> => {
   const base = path.resolve(rootDir);
   const resolved = path.resolve(base, filePath);
   const relative = path.relative(base, resolved);
@@ -932,23 +953,28 @@ export const validateFilePath = async (
     throw new Error(`file must be in the root directory: ${filePath}`);
   }
   const components = relative.split(path.sep);
+  // The Create a tree API rejects a non-normalized path, e.g. ./a, a/../b, a/
+  if (components.join("/") !== filePath) {
+    throw new Error(`file path must be normalized: ${filePath}`);
+  }
+  if (components.some((c) => c.toLowerCase() === ".git")) {
+    throw new Error(`file must not be in a .git directory: ${filePath}`);
+  }
   for (let i = 1; i < components.length; i++) {
     let stats: Stats;
     try {
       stats = await lstat(path.join(base, ...components.slice(0, i)));
     } catch (error: unknown) {
       if (isNotFound(error)) {
-        return resolved;
+        return { fullPath: resolved, underSymlink: false };
       }
       throw error;
     }
     if (stats.isSymbolicLink()) {
-      throw new Error(
-        `a parent directory of a file must not be a symlink: ${filePath}`,
-      );
+      return { fullPath: resolved, underSymlink: true };
     }
   }
-  return resolved;
+  return { fullPath: resolved, underSymlink: false };
 };
 
 const getFileMode = (mode: number): FileMode => {

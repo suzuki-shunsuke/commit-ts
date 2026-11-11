@@ -1,11 +1,14 @@
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { Buffer } from "node:buffer";
 import {
   createCommit,
   createSymlinkTreeEntry,
   type GitHub,
+  listParentDirs,
   type Options,
+  pickReplacedParents,
   removeDeletionsUnderSymlinks,
+  replaceParents,
   tryInlineUtf8,
   validateOptions,
   validateTree,
@@ -268,19 +271,116 @@ Deno.test("createCommit: replace a directory with a symlink", async () => {
   assertEquals(calls.tree, [symlink("dir", "other")]);
 });
 
+Deno.test("listParentDirs: parents of added paths except deleted paths", () => {
+  assertEquals(
+    listParentDirs([
+      symlink("a/b/link"),
+      file("c/d.txt"),
+      deleted("e/f.txt"),
+      deleted("c"),
+      submodule("g/sub"),
+      file("top.txt"),
+      dir("h"),
+      file("h/i.txt"),
+    ]).sort(),
+    ["a", "a/b", "g"],
+  );
+});
+
+Deno.test("pickReplacedParents: files and symlinks in the base tree", () => {
+  const typenames = new Map<string, string | null>([
+    ["f", "Blob"],
+    ["dir", "Tree"],
+    ["dir/link", "Blob"],
+    ["new", null],
+  ]);
+  assertEquals(pickReplacedParents(typenames), ["f", "dir/link"]);
+  assertThrows(
+    () => pickReplacedParents(new Map([["sub", "Commit"]])),
+    Error,
+    "sub is a submodule in the base tree",
+  );
+});
+
+Deno.test("replaceParents: deletions first, without deletions under them", () => {
+  assertEquals(
+    replaceParents(
+      [
+        deleted("f/old"),
+        deleted("f/g/old"),
+        deleted("f-2/old"),
+        symlink("f/new"),
+        file("x.txt"),
+      ],
+      ["f"],
+    ),
+    [deleted("f"), deleted("f-2/old"), symlink("f/new"), file("x.txt")],
+  );
+});
+
 // fakeOctokit records the tree passed to createTree.
-const fakeOctokit = () => {
-  const calls: { tree?: unknown[] } = {};
+// baseTypes maps a path in the base tree to the GraphQL typename of the
+// object (Blob, Tree, or Commit). Like the real API, createTree fails with
+// GitRPC::BadObjectState if a path is added under a Blob or a Commit which
+// isn't deleted.
+const fakeOctokit = (baseTypes: Record<string, string> = {}) => {
+  const calls: { tree?: unknown[]; createTree: number; treeQueries: number } = {
+    createTree: 0,
+    treeQueries: 0,
+  };
   const octokit = {
-    graphql: () =>
-      Promise.resolve({
-        repository: {
-          ref: { target: { oid: "base-commit", tree: { oid: "base-tree" } } },
-        },
-      }),
+    graphql: (query: string, variables: Record<string, string>) => {
+      if (query.includes("ref(qualifiedName")) {
+        return Promise.resolve({
+          repository: {
+            ref: {
+              target: { oid: "base-commit", tree: { oid: "base-tree" } },
+            },
+          },
+        });
+      }
+      calls.treeQueries++;
+      const repository: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(variables)) {
+        if (!/^p\d+$/.test(key)) {
+          continue;
+        }
+        const typename = baseTypes[value.replace(/^base-tree:/, "")];
+        repository[key] = typename ? { __typename: typename } : null;
+      }
+      return Promise.resolve({ repository });
+    },
     rest: {
       git: {
-        createTree: (params: { tree: unknown[] }) => {
+        createTree: (
+          params: { tree: { path: string; sha?: string | null }[] },
+        ) => {
+          calls.createTree++;
+          const deleted = new Set(
+            params.tree.filter((e) => e.sha === null).map((e) => e.path),
+          );
+          for (const entry of params.tree) {
+            if (entry.sha === null) {
+              // Deleting a path under a Blob, which doesn't exist, fails
+              const elems = entry.path.split("/");
+              for (let i = 1; i < elems.length; i++) {
+                if (baseTypes[elems.slice(0, i).join("/")] === "Blob") {
+                  return Promise.reject(new Error("GitRPC::BadObjectState"));
+                }
+              }
+              continue;
+            }
+            const elems = entry.path.split("/");
+            for (let i = 1; i < elems.length; i++) {
+              const parent = elems.slice(0, i).join("/");
+              if (
+                ["Blob", "Commit"].includes(baseTypes[parent]) &&
+                !deleted.has(parent)
+              ) {
+                return Promise.reject(new Error("GitRPC::BadObjectState"));
+              }
+            }
+          }
           calls.tree = params.tree;
           return Promise.resolve({ data: { sha: "new-tree" } });
         },
@@ -328,4 +428,137 @@ Deno.test("createCommit: nothing to commit", async () => {
   const { octokit, calls } = fakeOctokit();
   assertEquals(await createCommit(octokit, baseOptions), undefined);
   assertEquals(calls.tree, undefined);
+});
+
+Deno.test("createCommit: delete a file in the base tree replaced with a directory", async () => {
+  const { octokit, calls } = fakeOctokit({
+    f: "Blob",
+    dir: "Tree",
+    "dir/link": "Blob",
+  });
+  await createCommit(octokit, {
+    ...baseOptions,
+    symlinks: [
+      { path: "f/a", target: "x" },
+      { path: "dir/link/b", target: "y" },
+      { path: "dir/c", target: "z" },
+    ],
+    logger: { info: () => {} },
+  });
+  // Deletions are put first
+  assertEquals(calls.tree, [
+    deleted("f"),
+    deleted("dir/link"),
+    symlink("f/a", "x"),
+    symlink("dir/link/b", "y"),
+    symlink("dir/c", "z"),
+  ]);
+  assertEquals(calls.createTree, 2);
+});
+
+Deno.test("createCommit: an already deleted parent isn't queried", async () => {
+  const { octokit, calls } = fakeOctokit({ f: "Blob" });
+  await createCommit(octokit, {
+    ...baseOptions,
+    deletedFiles: ["f"],
+    symlinks: [{ path: "f/a", target: "x" }],
+    logger: { info: () => {} },
+  });
+  assertEquals(calls.tree, [deleted("f"), symlink("f/a", "x")]);
+  assertEquals(calls.treeQueries, 0);
+});
+
+Deno.test("createCommit: a path under a submodule in the base tree throws", async () => {
+  const { octokit } = fakeOctokit({ sub: "Commit" });
+  await assertRejects(
+    () =>
+      createCommit(octokit, {
+        ...baseOptions,
+        symlinks: [{ path: "sub/a", target: "x" }],
+        logger: { info: () => {} },
+      }),
+    Error,
+    "sub is a submodule in the base tree",
+  );
+});
+
+Deno.test("createCommit: the base tree isn't queried if createTree succeeds", async () => {
+  const { octokit, calls } = fakeOctokit({ dir: "Tree" });
+  await createCommit(octokit, {
+    ...baseOptions,
+    symlinks: [{ path: "dir/link", target: "x" }],
+    logger: { info: () => {} },
+  });
+  assertEquals(calls.treeQueries, 0);
+  assertEquals(calls.createTree, 1);
+});
+
+Deno.test("createCommit: BadObjectState for another reason is thrown as is", async () => {
+  const { octokit, calls } = fakeOctokit({ f: "Blob" });
+  // Simulate BadObjectState for another reason: createTree fails, but the
+  // query finds no file or symlink in the parents.
+  (octokit as unknown as { graphql: unknown }).graphql = (query: string) =>
+    query.includes("ref(qualifiedName")
+      ? Promise.resolve({
+        repository: {
+          ref: { target: { oid: "base-commit", tree: { oid: "base-tree" } } },
+        },
+      })
+      : Promise.resolve({ repository: {} });
+  await assertRejects(
+    () =>
+      createCommit(octokit, {
+        ...baseOptions,
+        symlinks: [{ path: "f/a", target: "x" }],
+        logger: { info: () => {} },
+      }),
+    Error,
+    "GitRPC::BadObjectState",
+  );
+  assertEquals(calls.createTree, 1);
+});
+
+Deno.test("createCommit: the base tree isn't queried with noParent", async () => {
+  const { octokit, calls } = fakeOctokit();
+  await createCommit(octokit, {
+    ...baseOptions,
+    noParent: true,
+    symlinks: [{ path: "f/a", target: "x" }],
+    logger: { info: () => {} },
+  });
+  assertEquals(calls.treeQueries, 0);
+  assertEquals(calls.tree, [symlink("f/a", "x")]);
+});
+
+Deno.test("createCommit: deletions under a replaced parent are removed", async () => {
+  const { octokit, calls } = fakeOctokit({ f: "Blob" });
+  await createCommit(octokit, {
+    ...baseOptions,
+    deletedFiles: ["f/old"],
+    symlinks: [{ path: "f/new", target: "x" }],
+    logger: { info: () => {} },
+  });
+  assertEquals(calls.tree, [deleted("f"), symlink("f/new", "x")]);
+});
+
+Deno.test("createCommit: the original error is thrown if the query fails", async () => {
+  const { octokit } = fakeOctokit({ f: "Blob" });
+  (octokit as unknown as { graphql: unknown }).graphql = (query: string) =>
+    query.includes("ref(qualifiedName")
+      ? Promise.resolve({
+        repository: {
+          ref: { target: { oid: "base-commit", tree: { oid: "base-tree" } } },
+        },
+      })
+      : Promise.reject(new Error("rate limit"));
+  await assertRejects(
+    () =>
+      createCommit(octokit, {
+        ...baseOptions,
+        symlinks: [{ path: "f/a", target: "x" }],
+        logger: { info: () => {} },
+      }),
+    Error,
+    "GitRPC::BadObjectState",
+  );
 });

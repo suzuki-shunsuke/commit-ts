@@ -212,6 +212,55 @@ const getTreeSHA = async (
   tree = removeDeletionsUnderSymlinks(tree);
   const useBaseTree = opts.useBaseTree ?? !opts.noParent;
   const baseTree = useBaseTree ? baseBranch.target.tree.oid : undefined;
+  try {
+    return await createTree(octokit, opts, tree, baseTree, logger);
+  } catch (error: unknown) {
+    if (!baseTree || !isBadObjectState(error)) {
+      throw error;
+    }
+    // A path may be added under a file or a symlink in the base tree,
+    // i.e. a file or a symlink replaced with a directory.
+    // It's checked only on this error to avoid extra API calls.
+    let replaced: string[];
+    try {
+      replaced = await findReplacedParents(octokit, opts, baseTree, tree);
+    } catch (findError: unknown) {
+      if (isError(findError) && findError.message.includes("submodule")) {
+        throw findError;
+      }
+      // Don't hide the original error
+      logger.info(
+        `failed to check if files in the base tree are replaced with directories: ${
+          isError(findError) ? findError.message : findError
+        }`,
+      );
+      throw error;
+    }
+    if (replaced.length === 0) {
+      throw error;
+    }
+    for (const parent of replaced) {
+      logger.info(
+        `deleting ${parent}, which is a file or a symlink in the base tree, to add paths under it`,
+      );
+    }
+    return await createTree(
+      octokit,
+      opts,
+      replaceParents(tree, replaced),
+      baseTree,
+      logger,
+    );
+  }
+};
+
+const createTree = async (
+  octokit: GitHub,
+  opts: Options,
+  tree: TreeEntry[],
+  baseTree: string | undefined,
+  logger: Logger,
+): Promise<string> => {
   logger.info(
     `creating a tree with ${tree.length} files: owner=${opts.owner} repo=${opts.repo} base_tree=${baseTree}`,
   );
@@ -225,6 +274,27 @@ const getTreeSHA = async (
   });
   return treeResp.data.sha;
 };
+
+/**
+ * @internal Exported for tests.
+ *
+ * Returns the tree with deletions of the replaced parents put first.
+ * Deletions under the replaced parents are removed: they don't exist in the
+ * base tree because the parents are files or symlinks there, and the Create a
+ * tree API fails with GitRPC::BadObjectState when deleting a missing path.
+ */
+export const replaceParents = (
+  tree: TreeEntry[],
+  replaced: string[],
+): TreeEntry[] => {
+  return [
+    ...replaced.map(createDeletedTreeFile),
+    ...removeDeletionsUnder(tree, new Set(replaced)),
+  ];
+};
+
+const isBadObjectState = (error: unknown): boolean =>
+  isError(error) && error.message.includes("BadObjectState");
 
 /**
  * @internal Exported for tests.
@@ -326,13 +396,20 @@ export const validateTree = (tree: TreeEntry[]): void => {
 export const removeDeletionsUnderSymlinks = (
   tree: TreeEntry[],
 ): TreeEntry[] => {
-  const symlinkPaths = getSymlinkPaths(tree);
-  if (symlinkPaths.size === 0) {
+  return removeDeletionsUnder(tree, getSymlinkPaths(tree));
+};
+
+// removeDeletionsUnder removes deletions of paths under the given paths.
+const removeDeletionsUnder = (
+  tree: TreeEntry[],
+  paths: Set<string>,
+): TreeEntry[] => {
+  if (paths.size === 0) {
     return tree;
   }
   return tree.filter((e) =>
     e.sha !== null ||
-    !parentDirs(e.path).some((parent) => symlinkPaths.has(parent))
+    !parentDirs(e.path).some((parent) => paths.has(parent))
   );
 };
 
@@ -342,6 +419,105 @@ const getSymlinkPaths = (tree: TreeEntry[]): Set<string> =>
       e.path
     ),
   );
+
+/**
+ * @internal Exported for tests.
+ *
+ * Returns the parent directories of the entries which add paths, excluding
+ * paths which are entries of the tree themselves (e.g. already deleted).
+ */
+export const listParentDirs = (tree: TreeEntry[]): string[] => {
+  const paths = new Set(tree.map((e) => e.path));
+  const parents = new Set<string>();
+  for (const entry of tree) {
+    if (entry.sha === null) {
+      continue;
+    }
+    for (const parent of parentDirs(entry.path)) {
+      if (!paths.has(parent)) {
+        parents.add(parent);
+      }
+    }
+  }
+  return [...parents];
+};
+
+/**
+ * @internal Exported for tests.
+ *
+ * Returns the parents which are files or symlinks (Blob) in the base tree.
+ * typenames maps a parent to the GraphQL typename of the object at the path
+ * in the base tree (Blob, Tree, or Commit for a submodule), or null if the
+ * path doesn't exist.
+ * It throws an error if a parent is a submodule, because a path under a
+ * submodule can't be added.
+ */
+export const pickReplacedParents = (
+  typenames: Map<string, string | null>,
+): string[] => {
+  const replaced: string[] = [];
+  for (const [parent, typename] of typenames) {
+    if (typename === "Blob") {
+      replaced.push(parent);
+    } else if (typename === "Commit") {
+      throw new Error(
+        `${parent} is a submodule in the base tree, so paths under it can't be added`,
+      );
+    }
+  }
+  return replaced;
+};
+
+// The number of paths queried by one GraphQL request
+const treeQueryChunkSize = 100;
+
+/**
+ * Returns the parent directories of added paths which are files or symlinks
+ * in the base tree, i.e. files or symlinks replaced with directories.
+ *
+ * The Create a tree API can't add a path under a file or a symlink in the
+ * base tree (GitRPC::BadObjectState), so they must be deleted explicitly.
+ * The base tree is checked by the API, because the caller's working tree can
+ * differ from the base tree.
+ */
+const findReplacedParents = async (
+  octokit: GitHub,
+  opts: Options,
+  baseTree: string,
+  tree: TreeEntry[],
+): Promise<string[]> => {
+  const parents = listParentDirs(tree);
+  const typenames = new Map<string, string | null>();
+  for (let i = 0; i < parents.length; i += treeQueryChunkSize) {
+    const chunk = parents.slice(i, i + treeQueryChunkSize);
+    const variables: Record<string, string> = {
+      owner: opts.owner,
+      repo: opts.repo,
+    };
+    chunk.forEach((parent, j) => {
+      variables[`p${j}`] = `${baseTree}:${parent}`;
+    });
+    const resp = await octokit.graphql<{
+      repository: Record<string, { __typename: string } | null>;
+    }>(
+      `query($owner: String!, $repo: String!, ${
+        chunk.map((_, j) => `$p${j}: String!`).join(", ")
+      }) {
+  repository(owner: $owner, name: $repo) {
+    ${
+        chunk.map((_, j) => `p${j}: object(expression: $p${j}) { __typename }`)
+          .join("\n    ")
+      }
+  }
+}`,
+      variables,
+    );
+    chunk.forEach((parent, j) => {
+      typenames.set(parent, resp.repository[`p${j}`]?.__typename ?? null);
+    });
+  }
+  return pickReplacedParents(typenames);
+};
 
 // parentDirs("a/b/c") returns ["a", "a/b"].
 const parentDirs = (p: string): string[] => {
